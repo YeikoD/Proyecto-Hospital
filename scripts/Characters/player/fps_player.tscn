@@ -1,8 +1,8 @@
 [gd_scene format=3 uid="uid://cyeiic54bgiqd"]
 
-[ext_resource type="Script" uid="uid://dsdrfbv7ugo5j" path="res://player/fps_player.gd" id="1_fps"]
+[ext_resource type="Script" path="res://scripts/characters/player/fps_player.gd" id="1_ninad"]
 [ext_resource type="PackedScene" uid="uid://dc3g5grlcitq6" path="res://models/character/human.glb" id="2_alf2h"]
-[ext_resource type="Script" uid="uid://bpc0a06q7rsmd" path="res://scripts/Characters/animation_controller.gd" id="3_animctl"]
+[ext_resource type="Script" uid="uid://bpc0a06q7rsmd" path="res://scripts/characters/animation_controller.gd" id="3_animctl"]
 [ext_resource type="AnimationLibrary" uid="uid://c70ure8qbj8ju" path="res://anim/player_library.tres" id="4_lib"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_body"]
@@ -10,7 +10,7 @@ radius = 0.35
 height = 1.8
 
 [node name="FPSPlayer" type="CharacterBody3D" unique_id=370256555]
-script = ExtResource("1_fps")
+script = ExtResource("1_ninad")
 speed = 1.5
 sprint_speed = 3.0
 

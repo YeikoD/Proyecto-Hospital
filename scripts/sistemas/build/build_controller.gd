@@ -1,0 +1,592 @@
+class_name BuildController
+extends Node3D
+
+## Modo construccion estilo Sims (version basica).
+##
+## B toggle  |  1 suelo  |  2 pared  |  3 borrar  |  Esc salir
+## Clic izquierdo coloca (y se puede arrastrar para pintar varias celdas).
+##
+## La grilla y la camara se resuelven automaticamente si no se asignan en el
+## inspector, asi que basta con anadir `scripts/sistemas/build/build_system.tscn` a una escena
+## que tenga un FPSPlayer.
+
+enum Tool { FLOOR, WALL, ERASE }
+
+## Se emite cuando cambia el conjunto de piezas colocadas (colocar, borrar o
+## limpiar). La navegación lo usa para rehornear el NavMesh con debounce.
+signal pieces_changed
+
+const FLOOR_PREFAB := preload("res://scripts/sistemas/build/prefabs/floor_tile.tscn")
+const WALL_PREFAB := preload("res://scripts/sistemas/build/prefabs/wall_segment.tscn")
+const COLOR_OK := Color(0.25, 1.0, 0.6, 0.35)
+const COLOR_BAD := Color(1.0, 0.3, 0.25, 0.42)
+const COLOR_ERASE := Color(1.0, 0.45, 0.2, 0.5)
+
+@export var grid: BuildGrid
+@export var build_camera: BuildCamera
+@export var player: FPSController
+@export var pieces_root: Node3D
+@export var floor_scene: PackedScene = FLOOR_PREFAB
+@export var wall_scene: PackedScene = WALL_PREFAB
+
+@export_group("Dimensiones")
+@export var floor_thickness := 0.1
+@export var wall_height := 2.8
+@export var wall_thickness := 0.2
+
+@export_group("Interfaz")
+@export var show_help := true
+@export var start_in_build_mode := false
+
+var build_mode := false
+var tool: Tool = Tool.FLOOR
+
+var _floors: Dictionary = {}
+var _walls: Dictionary = {}
+
+var _floor_ghost: MeshInstance3D
+var _wall_ghost: MeshInstance3D
+var _ghost_material: StandardMaterial3D
+
+var _hover_cell := Vector2i.ZERO
+var _hover_wall := Vector3i.ZERO
+var _hovering := false
+var _painting := false
+
+var _player_camera: Camera3D
+var _camera_framed := false
+
+var _ui_layer: CanvasLayer
+var _ui_title: Label
+var _ui_tool: Label
+
+
+func _ready() -> void:
+	BuildInput.ensure_actions()
+	_resolve_references()
+	_create_ghosts()
+	_create_ui()
+
+	if grid != null:
+		grid.visible = false
+	if _ui_layer != null:
+		_ui_layer.visible = false
+	set_process(false)
+
+	if start_in_build_mode:
+		enter_build_mode()
+
+
+# --------------------------------------------------------------------------
+# Modo construccion
+# --------------------------------------------------------------------------
+
+func enter_build_mode() -> void:
+	if build_mode:
+		return
+	if grid == null:
+		push_warning("BuildController: falta la grilla (BuildGrid).")
+		return
+
+	if player == null:
+		player = _find_player(get_tree().current_scene)
+	if player == null:
+		player = _find_player(get_tree().root)
+
+	_player_camera = get_viewport().get_camera_3d()
+	if _player_camera == null and player != null:
+		_player_camera = _find_camera(player)
+
+	build_mode = true
+	set_process(true)
+
+	if player != null:
+		player.set_physics_process(false)
+		player.set_process_unhandled_input(false)
+
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+	if build_camera == null:
+		build_camera = _find_build_camera(get_tree().current_scene)
+	if build_camera != null:
+		if not _camera_framed:
+			var side := maxf(grid.cells_x, grid.cells_z) * grid.cell_size
+			build_camera.frame_grid(grid.center_point(), side)
+			_camera_framed = true
+		build_camera.current = true
+
+	grid.visible = true
+	_update_ui()
+
+
+func exit_build_mode() -> void:
+	if not build_mode:
+		return
+
+	build_mode = false
+	set_process(false)
+	_painting = false
+	_hovering = false
+	_hide_ghosts()
+
+	if build_camera != null:
+		build_camera.current = false
+	if grid != null:
+		grid.visible = false
+	if _ui_layer != null:
+		_ui_layer.visible = false
+
+	if _player_camera != null and is_instance_valid(_player_camera):
+		_player_camera.current = true
+
+	if player != null:
+		player.set_physics_process(true)
+		player.set_process_unhandled_input(true)
+
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+
+func set_tool(new_tool: Tool) -> void:
+	tool = new_tool
+	_update_ui()
+
+
+# --------------------------------------------------------------------------
+# Entrada
+# --------------------------------------------------------------------------
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event.is_action_pressed("build_toggle"):
+		if build_mode:
+			exit_build_mode()
+		else:
+			enter_build_mode()
+		get_viewport().set_input_as_handled()
+		return
+
+	if not build_mode:
+		return
+
+	if event.is_action_pressed("ui_cancel"):
+		exit_build_mode()
+		get_viewport().set_input_as_handled()
+	elif event.is_action_pressed("build_tool_floor"):
+		set_tool(Tool.FLOOR)
+		get_viewport().set_input_as_handled()
+	elif event.is_action_pressed("build_tool_wall"):
+		set_tool(Tool.WALL)
+		get_viewport().set_input_as_handled()
+	elif event.is_action_pressed("build_tool_erase"):
+		set_tool(Tool.ERASE)
+		get_viewport().set_input_as_handled()
+
+
+func _process(_delta: float) -> void:
+	if not build_mode:
+		return
+
+	_hovering = _update_hover()
+	if not _hovering:
+		_painting = false
+		_hide_ghosts()
+		_update_ui()
+		return
+
+	_painting = Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
+	if _painting:
+		_apply_tool()
+
+	_update_ghosts()
+	_update_ui()
+
+
+# --------------------------------------------------------------------------
+# Colocacion
+# --------------------------------------------------------------------------
+
+func get_floor_count() -> int:
+	return _floors.size()
+
+
+func get_wall_count() -> int:
+	return _walls.size()
+
+
+func clear_all() -> void:
+	var had_pieces := not _floors.is_empty() or not _walls.is_empty()
+	for piece: Node in _floors.values():
+		piece.queue_free()
+	for piece: Node in _walls.values():
+		piece.queue_free()
+	_floors.clear()
+	_walls.clear()
+	if had_pieces:
+		pieces_changed.emit()
+
+
+## Coloca un suelo por API (misma validación que la herramienta).
+func place_floor(cell: Vector2i) -> bool:
+	return _place_floor(cell)
+
+
+## Coloca una pared por API (misma validación que la herramienta).
+func place_wall(key: Vector3i) -> bool:
+	return _place_wall(key)
+
+
+## Borra por API respetando la prioridad de la herramienta (pared, luego suelo).
+func erase_at(cell: Vector2i, wall: Vector3i) -> bool:
+	return _erase_at(cell, wall)
+
+
+func _apply_tool() -> void:
+	match tool:
+		Tool.FLOOR:
+			_place_floor(_hover_cell)
+		Tool.WALL:
+			_place_wall(_hover_wall)
+		Tool.ERASE:
+			_erase_at(_hover_cell, _hover_wall)
+
+
+func _can_place_floor(cell: Vector2i) -> bool:
+	return grid.is_cell_inside(cell) and not _floors.has(cell)
+
+
+func _can_place_wall(key: Vector3i) -> bool:
+	return grid.is_wall_inside(key) and not _walls.has(key)
+
+
+func _place_floor(cell: Vector2i) -> bool:
+	if not _can_place_floor(cell):
+		return false
+
+	var piece := _spawn_piece(floor_scene)
+	if piece == null:
+		return false
+
+	piece.is_wall = false
+	piece.cell = cell
+	piece.name = "Floor_%d_%d" % [cell.x, cell.y]
+	piece.global_position = grid.cell_center(cell) - Vector3.UP * (floor_thickness * 0.5)
+	piece.set_dimensions(Vector3(grid.cell_size, floor_thickness, grid.cell_size))
+	_floors[cell] = piece
+	pieces_changed.emit()
+	return true
+
+
+func _place_wall(key: Vector3i) -> bool:
+	if not _can_place_wall(key):
+		return false
+
+	var piece := _spawn_piece(wall_scene)
+	if piece == null:
+		return false
+
+	piece.is_wall = true
+	piece.wall_key = key
+	piece.name = "Wall_%d_%d_%d" % [key.x, key.y, key.z]
+	piece.global_transform = Transform3D(
+		Basis(Vector3.UP, grid.wall_yaw(key)),
+		grid.wall_center(key) + Vector3.UP * (wall_height * 0.5)
+	)
+	piece.set_dimensions(Vector3(grid.cell_size, wall_height, wall_thickness))
+	_walls[key] = piece
+	pieces_changed.emit()
+	return true
+
+
+func _erase_at(cell: Vector2i, wall: Vector3i) -> bool:
+	if _walls.has(wall):
+		_remove(_walls, wall)
+		pieces_changed.emit()
+		return true
+	if _floors.has(cell):
+		_remove(_floors, cell)
+		pieces_changed.emit()
+		return true
+	return false
+
+
+func _remove(collection: Dictionary, key: Variant) -> void:
+	var piece: Node = collection.get(key)
+	if piece != null:
+		piece.queue_free()
+	collection.erase(key)
+
+
+func _spawn_piece(scene: PackedScene) -> BuildPiece:
+	if scene == null:
+		push_warning("BuildController: falta un prefab de pieza.")
+		return null
+
+	var instance := scene.instantiate()
+	if not instance is BuildPiece:
+		push_warning("BuildController: el prefab no tiene el script BuildPiece.")
+		instance.queue_free()
+		return null
+
+	var piece := instance as BuildPiece
+	var parent: Node = pieces_root if pieces_root != null else self
+	parent.add_child(piece)
+	return piece
+
+
+# --------------------------------------------------------------------------
+# Hover / fantasmas
+# --------------------------------------------------------------------------
+
+func _update_hover() -> bool:
+	if build_camera == null or not build_camera.current:
+		return false
+
+	var mouse := get_viewport().get_mouse_position()
+	var from := build_camera.project_ray_origin(mouse)
+	var normal := build_camera.project_ray_normal(mouse)
+	var plane := Plane(Vector3.UP, grid.plane_global_y())
+	var hit: Variant = plane.intersects_ray(from, normal)
+	if hit == null:
+		return false
+
+	_hover_cell = grid.cell_from_world(hit)
+	_hover_wall = grid.wall_from_world(hit)
+	return true
+
+
+func _update_ghosts() -> void:
+	_hide_ghosts()
+	if not _hovering:
+		return
+
+	match tool:
+		Tool.FLOOR:
+			_show_floor_ghost(grid.clamp_cell(_hover_cell),
+				_can_place_floor(_hover_cell), false)
+		Tool.WALL:
+			_show_wall_ghost(grid.clamp_wall(_hover_wall),
+				_can_place_wall(_hover_wall), false)
+		Tool.ERASE:
+			if _walls.has(_hover_wall):
+				_show_wall_ghost(_hover_wall, true, true)
+			else:
+				_show_floor_ghost(grid.clamp_cell(_hover_cell),
+					_floors.has(_hover_cell), true)
+
+
+func _show_floor_ghost(cell: Vector2i, valid: bool, erasing: bool) -> void:
+	_floor_ghost.visible = true
+	var box := _floor_ghost.mesh as BoxMesh
+	box.size = Vector3(grid.cell_size * 0.94, 0.06, grid.cell_size * 0.94)
+	_floor_ghost.global_position = grid.cell_center(cell) \
+		+ Vector3.UP * (0.05 if not erasing else 0.09)
+	_set_ghost_color(valid, erasing)
+
+
+func _show_wall_ghost(key: Vector3i, valid: bool, erasing: bool) -> void:
+	_wall_ghost.visible = true
+	var box := _wall_ghost.mesh as BoxMesh
+	box.size = Vector3(grid.cell_size * 0.98, wall_height, wall_thickness * 0.7)
+	_wall_ghost.global_transform = Transform3D(
+		Basis(Vector3.UP, grid.wall_yaw(key)),
+		grid.wall_center(key) + Vector3.UP * (wall_height * 0.5)
+	)
+	_set_ghost_color(valid, erasing)
+
+
+func _set_ghost_color(valid: bool, erasing: bool) -> void:
+	if erasing:
+		_ghost_material.albedo_color = COLOR_ERASE
+	elif valid:
+		_ghost_material.albedo_color = COLOR_OK
+	else:
+		_ghost_material.albedo_color = COLOR_BAD
+
+
+func _hide_ghosts() -> void:
+	if _floor_ghost != null:
+		_floor_ghost.visible = false
+	if _wall_ghost != null:
+		_wall_ghost.visible = false
+
+
+# --------------------------------------------------------------------------
+# Construccion de nodos
+# --------------------------------------------------------------------------
+
+func _resolve_references() -> void:
+	var scene_root: Node = get_tree().current_scene
+	if scene_root == null:
+		scene_root = get_parent()
+
+	if grid == null:
+		grid = _find_grid(scene_root)
+	if build_camera == null:
+		build_camera = _find_build_camera(scene_root)
+	if build_camera == null:
+		build_camera = BuildCamera.new()
+		build_camera.name = "BuildCamera"
+		add_child(build_camera)
+	if player == null:
+		player = _find_player(scene_root)
+	if pieces_root == null:
+		# Reutilizar el contenedor que ya exista (por ejemplo, dentro del
+		# NavigationRegion3D) antes de crear uno nuevo. Buscar primero en el
+		# BuildSystem local para no mezclar varias instancias.
+		pieces_root = _find_named(get_parent(), "PlacedPieces") as Node3D
+	if pieces_root == null:
+		pieces_root = _find_named(scene_root, "PlacedPieces") as Node3D
+	if pieces_root == null:
+		pieces_root = Node3D.new()
+		pieces_root.name = "PlacedPieces"
+		add_child(pieces_root)
+
+
+func _create_ghosts() -> void:
+	_ghost_material = StandardMaterial3D.new()
+	_ghost_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_ghost_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	_ghost_material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	_ghost_material.albedo_color = COLOR_OK
+
+	_floor_ghost = _make_ghost("FloorGhost")
+	_wall_ghost = _make_ghost("WallGhost")
+
+
+func _make_ghost(node_name: String) -> MeshInstance3D:
+	var ghost := MeshInstance3D.new()
+	ghost.name = node_name
+	ghost.mesh = BoxMesh.new()
+	ghost.material_override = _ghost_material
+	ghost.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	ghost.visible = false
+	add_child(ghost)
+	return ghost
+
+
+func _create_ui() -> void:
+	_ui_layer = CanvasLayer.new()
+	_ui_layer.name = "BuildUI"
+	_ui_layer.layer = 10
+	add_child(_ui_layer)
+
+	_ui_title = _make_label("MODO CONSTRUCCIÓN", 20, Color(0.7, 0.95, 1.0))
+	_ui_title.position = Vector2(18, 12)
+	_ui_layer.add_child(_ui_title)
+
+	_ui_tool = _make_label("", 17, Color(0.95, 0.97, 1.0))
+	_ui_tool.position = Vector2(18, 40)
+	_ui_layer.add_child(_ui_tool)
+
+	var hint := _make_label(
+		"WASD: mover cámara   ·   clic derecho: orbitar   ·   rueda: zoom   ·   Q/E: altura\n"
+		+ "1: suelo   ·   2: pared   ·   3: borrar   ·   B / Esc: salir",
+		15, Color(0.85, 0.9, 0.95, 0.9)
+	)
+	hint.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
+	hint.offset_left = 18
+	hint.offset_top = -72
+	hint.offset_right = 980
+	hint.offset_bottom = -14
+	_ui_layer.add_child(hint)
+
+
+func _make_label(text: String, font_size: int, color: Color) -> Label:
+	var label := Label.new()
+	label.text = text
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	label.add_theme_font_size_override("font_size", font_size)
+	label.add_theme_color_override("font_color", color)
+	label.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.9))
+	label.add_theme_constant_override("outline_size", 5)
+	return label
+
+
+func _update_ui() -> void:
+	if _ui_layer == null:
+		return
+	_ui_layer.visible = build_mode and show_help
+	if not build_mode:
+		return
+
+	var tool_name := _tool_name()
+	if _hovering:
+		_ui_tool.text = "%s   ·   celda (%d, %d)" % [
+			tool_name, _hover_cell.x, _hover_cell.y
+		]
+	else:
+		_ui_tool.text = tool_name
+
+
+func _tool_name() -> String:
+	match tool:
+		Tool.FLOOR:
+			return "Herramienta: suelo"
+		Tool.WALL:
+			return "Herramienta: pared"
+		Tool.ERASE:
+			return "Herramienta: borrar"
+	return ""
+
+
+# --------------------------------------------------------------------------
+# Busquedas
+# --------------------------------------------------------------------------
+
+func _find_grid(node: Node) -> BuildGrid:
+	if node == null:
+		return null
+	if node is BuildGrid:
+		return node as BuildGrid
+	for child in node.get_children():
+		var found := _find_grid(child)
+		if found != null:
+			return found
+	return null
+
+
+func _find_build_camera(node: Node) -> BuildCamera:
+	if node == null:
+		return null
+	if node is BuildCamera:
+		return node as BuildCamera
+	for child in node.get_children():
+		var found := _find_build_camera(child)
+		if found != null:
+			return found
+	return null
+
+
+func _find_player(node: Node) -> FPSController:
+	if node == null:
+		return null
+	if node is FPSController:
+		return node as FPSController
+	for child in node.get_children():
+		var found := _find_player(child)
+		if found != null:
+			return found
+	return null
+
+
+func _find_named(node: Node, node_name: String) -> Node:
+	if node == null:
+		return null
+	if node.name == node_name:
+		return node
+	for child in node.get_children():
+		var found := _find_named(child, node_name)
+		if found != null:
+			return found
+	return null
+
+
+func _find_camera(node: Node) -> Camera3D:
+	if node == null:
+		return null
+	if node is Camera3D:
+		return node as Camera3D
+	for child in node.get_children():
+		var found := _find_camera(child)
+		if found != null:
+			return found
+	return null

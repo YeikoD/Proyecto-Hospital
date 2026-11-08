@@ -1,0 +1,93 @@
+[gd_scene format=4 uid="uid://dddexy7kbhkp8"]
+
+[ext_resource type="PackedScene" uid="uid://cyeiic54bgiqd" path="res://scripts/characters/player/fps_player.tscn" id="1_player"]
+[ext_resource type="PackedScene" path="res://scripts/sistemas/build/build_system.tscn" id="2_build"]
+[ext_resource type="Script" uid="uid://cwu5cf7a0awcd" path="res://addons/func_godot/src/map/func_godot_map.gd" id="3_ybfri"]
+[ext_resource type="Resource" uid="uid://bkhxcqsquw1yg" path="res://addons/func_godot/func_godot_default_map_settings.tres" id="4_e28x7"]
+[ext_resource type="Material" uid="uid://ck2etr2tiup03" path="res://maps/textures/Seas/isle_grass1a.tres" id="5_ybfri"]
+[ext_resource type="PackedScene" path="res://scripts/characters/npc/npc.tscn" id="6_e28x7"]
+
+
+[sub_resource type="Environment" id="Environment_main"]
+background_mode = 1
+background_color = Color(0.52, 0.66, 0.8, 1)
+ambient_light_source = 2
+ambient_light_color = Color(0.6, 0.66, 0.74, 1)
+ambient_light_energy = 0.65
+reflected_light_source = 2
+tonemap_mode = 2
+
+[sub_resource type="StandardMaterial3D" id="Material_ground"]
+albedo_color = Color(0.26, 0.36, 0.22, 1)
+roughness = 0.95
+
+[sub_resource type="PlaneMesh" id="Mesh_ground"]
+material = SubResource("Material_ground")
+size = Vector2(80, 80)
+
+[sub_resource type="BoxShape3D" id="Shape_ground"]
+size = Vector3(80, 0.5, 80)
+
+[sub_resource type="ArrayMesh" id="ArrayMesh_e28x7"]
+_surfaces = [{
+"aabb": AABB(-44.5, -1, -39.5, 85, 1, 80),
+"attribute_data": PackedByteArray("AAAHwQAAgL1VVRRBAACAvVVVFEFVVRU+AAAHwVVVFT4AAAdBVVUVPqqqA8FVVRU+qqoDwQAAgL0AAAdBAACAvQAAB8FVVRRBAAAHwQAAB8GqqgNBAAAHwaqqA0FVVRRBAAAHQVVVFEGqqgPBVVUUQaqqA8EAAAfBAAAHQQAAB8EAAAfBAACAvaqqA0EAAIC9qqoDQVVVFT4AAAfBVVUVPgAAB0FVVRU+VVUUwVVVFT5VVRTBAACAvQAAB0EAAIC9"),
+"format": 34359742487,
+"index_count": 36,
+"index_data": PackedByteArray("AAABAAIAAAACAAMABAAFAAYABAAGAAcACAAJAAoACAAKAAsADAANAA4ADAAOAA8AEAARABIAEAASABMAFAAVABYAFAAWABcA"),
+"material": ExtResource("5_ybfri"),
+"name": "Seas/isle_grass1a",
+"primitive": 3,
+"uv_scale": Vector4(0, 0, 0, 0),
+"vertex_count": 24,
+"vertex_data": PackedByteArray("AAAiQgAAAAAAAB7CAAAywgAAAAAAAB7CAAAywgAAgL8AAB7CAAAiQgAAgL8AAB7CAAAywgAAgL8AACJCAAAywgAAgL8AAB7CAAAywgAAAAAAAB7CAAAywgAAAAAAACJCAAAywgAAgL8AACJCAAAiQgAAgL8AACJCAAAiQgAAgL8AAB7CAAAywgAAgL8AAB7CAAAywgAAAAAAACJCAAAywgAAAAAAAB7CAAAiQgAAAAAAAB7CAAAiQgAAAAAAACJCAAAiQgAAAAAAACJCAAAiQgAAAAAAAB7CAAAiQgAAgL8AAB7CAAAiQgAAgL8AACJCAAAiQgAAgL8AACJCAAAywgAAgL8AACJCAAAywgAAAAAAACJCAAAiQgAAAAAAACJC/////wAA/7//////AAD/v/////8AAP+//////wAA/78AAP9//3//vwAA/3//f/+/AAD/f/9//78AAP9//3//v/9/AAD//////38AAP//////fwAA//////9/AAD//////3////9//7//f////3//v/9/////f/+//3////9//7////9//////////3//////////f/////////9///////9//3////+//3//f////7//f/9/////v/9//3////+/")
+}]
+
+[sub_resource type="ConvexPolygonShape3D" id="ConvexPolygonShape3D_dkkdp"]
+points = PackedVector3Array(40.5, 0, 40.5, 40.5, -1, 40.5, -44.5, 0, 40.5, -44.5, -1, 40.5, 40.5, 0, -39.5, 40.5, -1, -39.5, -44.5, 0, -39.5, -44.5, -1, -39.5)
+
+[node name="BuildDemo" type="Node3D" unique_id=1611217203]
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=1704758513]
+environment = SubResource("Environment_main")
+
+[node name="BuildSystem" parent="." unique_id=1715999772 instance=ExtResource("2_build")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.02, 0)
+
+[node name="Sun" type="DirectionalLight3D" parent="." unique_id=1292390063]
+transform = Transform3D(0.76604444, -0.52654076, 0.3686878, 0, 0.57357645, 0.81915206, -0.6427876, -0.62750685, 0.43938506, 0, 0, 0)
+light_energy = 1.15
+shadow_transmittance_bias = -0.17
+shadow_opacity = 0.0
+shadow_blur = 0.0
+
+[node name="Ground" type="StaticBody3D" parent="." unique_id=1667772600]
+visible = false
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Ground" unique_id=1284561626]
+mesh = SubResource("Mesh_ground")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Ground" unique_id=1205856417]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.25, 0)
+shape = SubResource("Shape_ground")
+
+[node name="FuncGodotMap" type="Node3D" parent="." unique_id=1374539821]
+script = ExtResource("3_ybfri")
+local_map_file = "uid://bl4igvnh1xf8w"
+map_settings = ExtResource("4_e28x7")
+metadata/_custom_type_script = "uid://cwu5cf7a0awcd"
+
+[node name="entity_0_worldspawn" type="StaticBody3D" parent="FuncGodotMap" unique_id=54711349]
+collision_mask = 0
+
+[node name="entity_0_mesh_instance" type="MeshInstance3D" parent="FuncGodotMap/entity_0_worldspawn" unique_id=1919895494]
+mesh = SubResource("ArrayMesh_e28x7")
+
+[node name="entity_0_brush_0_collision_shape" type="CollisionShape3D" parent="FuncGodotMap/entity_0_worldspawn" unique_id=556801320]
+shape = SubResource("ConvexPolygonShape3D_dkkdp")
+
+[node name="FPSPlayer" parent="." unique_id=21838221 instance=ExtResource("1_player")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.05, 9)
+
+[node name="NPC" parent="." unique_id=1519618012 instance=ExtResource("6_e28x7")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2.80869, 0.0038244491, 5.1179285)

@@ -10,8 +10,8 @@ config_version=5
 
 [application]
 
-config/name="Proyecto Abyss"
-run/main_scene="uid://bp65jars1jp7w"
+config/name="Proyecto Hospital"
+run/main_scene="uid://dddexy7kbhkp8"
 config/features=PackedStringArray("4.7", "Forward Plus")
 config/icon="res://icon.svg"
 

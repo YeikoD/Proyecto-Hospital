@@ -1,0 +1,8 @@
+[gd_resource type="StandardMaterial3D" format=3 uid="uid://ck2etr2tiup03"]
+
+[ext_resource type="Texture2D" uid="uid://welwu151cksu" path="res://maps/textures/Seas/isle_grass1a.png" id="1_shtah"]
+
+[resource]
+albedo_texture = ExtResource("1_shtah")
+metallic_specular = 0.0
+texture_filter = 2
