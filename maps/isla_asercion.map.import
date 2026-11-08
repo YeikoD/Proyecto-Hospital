@@ -1,0 +1,14 @@
+[remap]
+
+importer="func_godot.map"
+type="Resource"
+uid="uid://7t2bn3tl516r"
+path="res://.godot/imported/isla_asercion.map-f6a860c0fe00679d59a4aff35455d755.tres"
+
+[deps]
+
+source_file="res://maps/isla_asercion.map"
+dest_files=["res://.godot/imported/isla_asercion.map-f6a860c0fe00679d59a4aff35455d755.tres"]
+
+[params]
+

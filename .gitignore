@@ -1,0 +1,10 @@
+# Godot 4+ specific ignores
+.godot/
+/android/
+
+# Packs de texturas: exceden el limite de 100 MB por archivo de GitHub
+*.rar
+
+# Temporales generados por el sistema / addons
+*.TMP
+*~RF*
