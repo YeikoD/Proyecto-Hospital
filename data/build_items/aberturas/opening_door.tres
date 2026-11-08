@@ -1,0 +1,17 @@
+[gd_resource type="Resource" script_class="BuildItem" load_steps=3 format=3 uid="uid://opening_door_item"]
+
+[ext_resource type="Script" path="res://scripts/sistemas/build/build_item.gd" id="1_script"]
+[ext_resource type="Texture2D" path="res://icon.svg" id="2_preview"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"opening_door"
+display_name = "Puerta (próximamente)"
+category = "construction"
+subcategory = "openings"
+object_type = "opening"
+preview = ExtResource("2_preview")
+scene = null
+footprint = Vector2i(1, 1)
+can_rotate = true
+notes = "Reservado para futura implementación de aberturas."

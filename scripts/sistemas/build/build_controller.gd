@@ -28,6 +28,8 @@ const COLOR_ERASE := Color(1.0, 0.45, 0.2, 0.5)
 @export var pieces_root: Node3D
 @export var floor_scene: PackedScene = FLOOR_PREFAB
 @export var wall_scene: PackedScene = WALL_PREFAB
+@export var build_menu: BuildMenu
+@export var items_dir: String = "res://data/build_items"
 
 @export_group("Dimensiones")
 @export var floor_thickness := 0.1
@@ -43,6 +45,10 @@ var tool: Tool = Tool.FLOOR
 
 var _floors: Dictionary = {}
 var _walls: Dictionary = {}
+
+var build_items: Array[BuildItem] = []
+var selected_item: BuildItem
+var _active_map_file: String = ""
 
 var _floor_ghost: MeshInstance3D
 var _wall_ghost: MeshInstance3D
@@ -64,6 +70,8 @@ var _ui_tool: Label
 func _ready() -> void:
 	BuildInput.ensure_actions()
 	_resolve_references()
+	_load_build_items()
+	_wire_build_menu()
 	_create_ghosts()
 	_create_ui()
 
@@ -116,6 +124,8 @@ func enter_build_mode() -> void:
 		build_camera.current = true
 
 	grid.visible = true
+	if build_menu != null:
+		build_menu.visible = true
 	_update_ui()
 
 
@@ -135,6 +145,8 @@ func exit_build_mode() -> void:
 		grid.visible = false
 	if _ui_layer != null:
 		_ui_layer.visible = false
+	if build_menu != null:
+		build_menu.visible = false
 
 	if _player_camera != null and is_instance_valid(_player_camera):
 		_player_camera.current = true
@@ -261,7 +273,7 @@ func _place_floor(cell: Vector2i) -> bool:
 	if not _can_place_floor(cell):
 		return false
 
-	var piece := _spawn_piece(floor_scene)
+	var piece := _spawn_current_piece()
 	if piece == null:
 		return false
 
@@ -279,7 +291,7 @@ func _place_wall(key: Vector3i) -> bool:
 	if not _can_place_wall(key):
 		return false
 
-	var piece := _spawn_piece(wall_scene)
+	var piece := _spawn_current_piece()
 	if piece == null:
 		return false
 
@@ -290,6 +302,14 @@ func _place_wall(key: Vector3i) -> bool:
 		Basis(Vector3.UP, grid.wall_yaw(key)),
 		grid.wall_center(key) + Vector3.UP * (wall_height * 0.5)
 	)
+	# Modelos importados (.glb/.blend/.map): ajustar altura a su AABB, no a
+	# wall_height, para que la base quede sobre el plano.
+	var mesh_instance := piece.get_node_or_null("MeshInstance3D") as MeshInstance3D
+	if mesh_instance == null:
+		var col := piece.get_node_or_null("CollisionShape3D") as CollisionShape3D
+		# Los modelos importados tienen el pivote en la base (tocan el piso),
+		# asi que la pieza se coloca directamente sobre el plano.
+		piece.global_position = grid.wall_center(key)
 	piece.set_dimensions(Vector3(grid.cell_size, wall_height, wall_thickness))
 	_walls[key] = piece
 	pieces_changed.emit()
@@ -315,21 +335,180 @@ func _remove(collection: Dictionary, key: Variant) -> void:
 	collection.erase(key)
 
 
+func _load_build_items() -> void:
+	build_items = BuildItemLoader.load_items(items_dir)
+	if build_menu != null:
+		build_menu.reload_items(items_dir)
+	# Seleccionar un item por defecto para no romper el flujo clásico.
+	if selected_item == null:
+		for item in build_items:
+			if item.object_type in ["floor", "suelo"]:
+				selected_item = item
+				break
+		if selected_item == null and not build_items.is_empty():
+			selected_item = build_items[0]
+	_apply_selected_item()
+
+
+func _wire_build_menu() -> void:
+	if build_menu == null:
+		return
+	if not build_menu.item_selected.is_connected(_on_build_item_selected):
+		build_menu.item_selected.connect(_on_build_item_selected)
+
+
+func _on_build_item_selected(item: BuildItem) -> void:
+	selected_item = item
+	_apply_selected_item()
+
+
+func _apply_selected_item() -> void:
+	if selected_item == null:
+		return
+	var scene := selected_item.scene
+	_active_map_file = selected_item.map_file
+	match selected_item.object_type:
+		"floor", "suelo":
+			tool = Tool.FLOOR
+			if scene != null:
+				floor_scene = scene
+		"wall", "pared":
+			tool = Tool.WALL
+			if scene != null:
+				wall_scene = scene
+		_:
+			# Tipos aún no colocables (techo, aberturas, muebles, ...).
+			pass
+	_update_ui()
+
+
+func _find_build_menu(node: Node) -> BuildMenu:
+	if node == null:
+		return null
+	if node is BuildMenu:
+		return node as BuildMenu
+	for child in node.get_children():
+		var found := _find_build_menu(child)
+		if found != null:
+			return found
+	return null
+
+func _spawn_current_piece() -> BuildPiece:
+	if _active_map_file != "":
+		return _spawn_map_piece(_active_map_file)
+	var scene := floor_scene if tool == Tool.FLOOR else wall_scene
+	return _spawn_piece(scene)
+
+
+func _spawn_map_piece(map_path: String) -> BuildPiece:
+	var fgmap := FuncGodotMap.new()
+	fgmap.local_map_file = map_path
+	var default_settings_path: String = ProjectSettings.get_setting(
+		"func_godot/default_map_settings",
+		"res://addons/func_godot/func_godot_default_map_settings.tres"
+	)
+	fgmap.map_settings = load(default_settings_path)
+	fgmap.build()
+
+	var piece := BuildPiece.new()
+	piece.name = map_path.get_file().get_basename()
+	var aabb := _compute_aabb(fgmap)
+	if aabb.size == Vector3.ZERO:
+		aabb.size = Vector3.ONE
+
+	# Extraer las mallas para no conservar el FuncGodotMap ni su cuerpo fisico.
+	var meshes: Array[MeshInstance3D] = []
+	_collect_meshes(fgmap, meshes)
+	for mi in meshes:
+		var parent := mi.get_parent()
+		if parent != null:
+			parent.remove_child(mi)
+		mi.owner = null
+		# Conservar el origen del modelo.
+		piece.add_child(mi)
+
+	fgmap.queue_free()
+
+	var collision := CollisionShape3D.new()
+	collision.name = "CollisionShape3D"
+	var box := BoxShape3D.new()
+	box.size = aabb.size
+	collision.shape = box
+	collision.position = aabb.position + aabb.size * 0.5
+	piece.add_child(collision)
+
+	var parent: Node = pieces_root if pieces_root != null else self
+	parent.add_child(piece)
+	return piece
+
+
 func _spawn_piece(scene: PackedScene) -> BuildPiece:
 	if scene == null:
 		push_warning("BuildController: falta un prefab de pieza.")
 		return null
 
 	var instance := scene.instantiate()
-	if not instance is BuildPiece:
-		push_warning("BuildController: el prefab no tiene el script BuildPiece.")
-		instance.queue_free()
-		return null
+	var piece: BuildPiece
+	if instance is BuildPiece:
+		piece = instance as BuildPiece
+	else:
+		if not (instance is Node3D):
+			push_warning("BuildController: el prefab no es una pieza ni un nodo 3D.")
+			instance.queue_free()
+			return null
+		for child in (instance as Node3D).get_children():
+			if child is Camera3D or child is Light3D:
+				child.queue_free()
+		piece = BuildPiece.new()
+		piece.name = instance.name
+		var aabb := _compute_aabb(instance)
+		if aabb.size == Vector3.ZERO:
+			aabb.size = Vector3.ONE
+		# Conservar el origen del modelo; no recentrarlo.
+		piece.add_child(instance)
+		var collision := CollisionShape3D.new()
+		collision.name = "CollisionShape3D"
+		var box := BoxShape3D.new()
+		box.size = aabb.size
+		collision.shape = box
+		collision.position = aabb.position + aabb.size * 0.5
+		piece.add_child(collision)
 
-	var piece := instance as BuildPiece
 	var parent: Node = pieces_root if pieces_root != null else self
 	parent.add_child(piece)
 	return piece
+
+
+static func _collect_meshes(node: Node, out: Array[MeshInstance3D]) -> void:
+	if node is MeshInstance3D:
+		out.append(node as MeshInstance3D)
+	for child in node.get_children():
+		_collect_meshes(child, out)
+
+
+static func _compute_aabb(node: Node, parent_transform: Transform3D = Transform3D.IDENTITY) -> AABB:
+	var node_transform := parent_transform
+	if node is Node3D:
+		node_transform = parent_transform * (node as Node3D).transform
+
+	var aabb := AABB()
+	var first := true
+	if node is MeshInstance3D:
+		var mi := node as MeshInstance3D
+		if mi.mesh != null:
+			aabb = node_transform * mi.mesh.get_aabb()
+			first = false
+	for child in node.get_children():
+		var child_aabb := _compute_aabb(child, node_transform)
+		if first:
+			if child_aabb.size != Vector3.ZERO:
+				aabb = child_aabb
+				first = false
+		elif child_aabb.size != Vector3.ZERO:
+			aabb = aabb.merge(child_aabb)
+	if first:
+		return AABB()
+	return aabb
 
 
 # --------------------------------------------------------------------------
@@ -440,6 +619,14 @@ func _resolve_references() -> void:
 		pieces_root.name = "PlacedPieces"
 		add_child(pieces_root)
 
+	if build_menu == null:
+		build_menu = _find_build_menu(get_parent())
+	if build_menu == null:
+		build_menu = _find_build_menu(get_tree().current_scene if get_tree() != null else null)
+	if build_menu == null:
+		build_menu = BuildMenu.new()
+		build_menu.items_dir = items_dir
+		add_child(build_menu)
 
 func _create_ghosts() -> void:
 	_ghost_material = StandardMaterial3D.new()

@@ -158,6 +158,21 @@ de `NavigationAgent3D` se dibujan en rojo.
 Godot.exe --headless --path . --script res://tests/nav_smoke_test.gd
 ```
 
+## Menú de items (catálogo)
+
+El menú de gameplay (`BuildMenu`) carga automáticamente todos los recursos
+`BuildItem` (`.tres`) de `res://data/build_items/`. Para agregar un nuevo
+item, el diseñador solo crea un `.tres` con el script `BuildItem`, asigna
+nombre, pestaña, subpestaña, tipo, imagen de preview y escena 3D. Al iniciar,
+aparece en el menú organizado por pestañas (construcción / objetos) y
+subpestañas (suelos, paredes, aberturas, muebles, etc.).
+
+Tecla por defecto para mostrar/ocultar el menú: `M`.
+
+Un item puede usar:
+- `scene`: una escena/PackedScene o modelo importado (`.blend`, etc.).
+- `map_file`: un archivo `.map`/`.vmf` de FuncGodot, que se construirá al colocar la pieza.
+
 ## Estructura
 
 ```

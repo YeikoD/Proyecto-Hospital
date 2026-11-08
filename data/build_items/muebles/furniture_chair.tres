@@ -1,0 +1,17 @@
+[gd_resource type="Resource" script_class="BuildItem" load_steps=3 format=3 uid="uid://furniture_chair_item"]
+
+[ext_resource type="Script" path="res://scripts/sistemas/build/build_item.gd" id="1_script"]
+[ext_resource type="Texture2D" path="res://icon.svg" id="2_preview"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"furniture_chair"
+display_name = "Silla (próximamente)"
+category = "objects"
+subcategory = "furniture"
+object_type = "furniture"
+preview = ExtResource("2_preview")
+scene = null
+footprint = Vector2i(1, 1)
+can_rotate = true
+notes = "Reservado para futura implementación de objetos."

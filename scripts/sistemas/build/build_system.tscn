@@ -6,6 +6,7 @@
 [ext_resource type="PackedScene" uid="uid://d1c67v51etni5" path="res://scripts/sistemas/build/prefabs/floor_tile.tscn" id="4_floor"]
 [ext_resource type="PackedScene" path="res://scripts/sistemas/build/prefabs/wall_segment.tscn" id="5_wall"]
 [ext_resource type="Script" uid="uid://bwhahmf4vvtgw" path="res://scripts/sistemas/build/build_navigation.gd" id="6_nav"]
+[ext_resource type="Script" path="res://scripts/sistemas/build/build_menu.gd" id="7_menu"]
 
 [sub_resource type="NavigationMesh" id="NavigationMesh_main"]
 agent_radius = 0.3
@@ -51,3 +52,6 @@ wall_scene = ExtResource("5_wall")
 script = ExtResource("6_nav")
 navigation_region = NodePath("../NavRegion")
 build_controller = NodePath("../BuildController")
+
+[node name="BuildMenu" type="CanvasLayer" parent="."]
+script = ExtResource("7_menu")
