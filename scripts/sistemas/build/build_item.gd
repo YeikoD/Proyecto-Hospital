@@ -29,6 +29,14 @@ extends Resource
 ## Escena 3D del item (debe ser o contener un BuildPiece cuando sea construible).
 @export var scene: PackedScene
 
+@export_group("Esquinas (solo paredes)")
+## Modelo de esquina para las L que giran a la izquierda. Si se deja vacío, el
+## sistema busca `<muro>_IZQ.blend` junto al modelo de la pared.
+@export var corner_left: PackedScene
+## Modelo de esquina para las L que giran a la derecha. Si se deja vacío, el
+## sistema busca `<muro>_DER.blend` junto al modelo de la pared.
+@export var corner_right: PackedScene
+
 ## Archivo de mapa (.map/.vmf) de FuncGodot que se construirá como pieza.
 @export_file("*.map", "*.vmf") var map_file: String = ""
 

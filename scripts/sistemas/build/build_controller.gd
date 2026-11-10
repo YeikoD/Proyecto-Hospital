@@ -63,8 +63,12 @@ var _wall_drag_start := Vector3i.ZERO
 var _wall_drag_start_cell := Vector2i.ZERO
 var _wall_drag_ghosts: Array[MeshInstance3D] = []
 var _corner_scene_cache: Dictionary = {}
-## Mallas de esquina recortadas (clave: malla + modelo + recorte) -> ArrayMesh.
+## Modelos de esquina del muro activo: "IZQ"/"DER" -> PackedScene.
+var _corner_scenes: Dictionary = {}
+## Mallas de esquina recortadas (clave: malla + modelo + limite) -> ArrayMesh.
 var _corner_trim_cache: Dictionary = {}
+## Huella de cada modelo de esquina en el espacio de la pieza.
+var _corner_footprint_cache: Dictionary = {}
 ## Esquinas visuales activas: clave de la pared duena -> BuildPiece.
 var _corner_pieces: Dictionary = {}
 ## Paredes tapadas por una esquina (se ocultan, pero conservan su colision).
@@ -504,6 +508,7 @@ func _apply_selected_item() -> void:
 				_wall_model_thickness_cache = -1.0
 				_corner_scene_cache.clear()
 				_corner_trim_cache.clear()
+				_corner_footprint_cache.clear()
 		_:
 			# Tipos aún no colocables (techo, aberturas, muebles, ...).
 			pass
@@ -645,6 +650,28 @@ func _corner_model_paths() -> Dictionary:
 	return {"IZQ": izq, "DER": der}
 
 
+## Modelos de esquina a usar. Primero manda lo asignado en el item
+## (`corner_left` / `corner_right`); lo que falte se busca por convencion de
+## nombre junto al modelo de la pared.
+func _resolve_corner_scenes() -> Dictionary:
+	var scenes := {}
+	if selected_item != null:
+		if selected_item.corner_left != null:
+			scenes["IZQ"] = selected_item.corner_left
+		if selected_item.corner_right != null:
+			scenes["DER"] = selected_item.corner_right
+	if scenes.size() == 2:
+		return scenes
+	var paths := _corner_model_paths()
+	for model_name in paths.keys():
+		if scenes.has(model_name):
+			continue
+		var loaded := _load_corner_scene(paths[model_name])
+		if loaded != null:
+			scenes[model_name] = loaded
+	return scenes
+
+
 ## Grosor real del modelo de muro (no siempre coincide con wall_thickness).
 func _wall_model_thickness() -> float:
 	if _wall_model_thickness_cache > 0.0:
@@ -661,13 +688,47 @@ func _wall_model_thickness() -> float:
 	return _wall_model_thickness_cache
 
 
+## Huella del modelo de esquina en el espacio de la pieza (sin la rotacion de
+## la pieza). Se acumulan las transformaciones a mano porque el nodo esta
+## fuera del arbol y `global_transform` devolveria la identidad.
+func _corner_footprint(model: String) -> AABB:
+	var scene: PackedScene = _corner_scenes.get(model)
+	if scene == null:
+		return AABB()
+	var key := "%d|%s" % [scene.get_instance_id(), model]
+	if _corner_footprint_cache.has(key):
+		return _corner_footprint_cache[key]
+	var instance := scene.instantiate()
+	var aabb := _compute_aabb(instance)
+	instance.free()
+	_corner_footprint_cache[key] = aabb
+	return aabb
+
+
+## Punto concavo del modelo (donde se juntan las caras interiores) en el
+## espacio de la pieza sin rotar. Se deduce de la huella real, asi que sigue
+## siendo valido aunque el modelo se mueva o se redimensione en Blender.
+func _corner_inner_point(model: String) -> Vector2:
+	var footprint := _corner_footprint(model)
+	if footprint.size == Vector3.ZERO:
+		return Vector2.ZERO
+	var t := _wall_model_thickness()
+	if model == "IZQ":
+		# El brazo horizontal sale hacia -X: su cara interior es el extremo +X.
+		return Vector2(footprint.end.x - t, footprint.position.z + t)
+	return Vector2(footprint.position.x + t, footprint.position.z + t)
+
+
 ## Calcula que paredes forman esquina y con que modelo/rotacion. En cada
 ## esquina una pared se convierte en la pieza de esquina y la otra se oculta,
 ## de modo que nunca hay dos esquinas superpuestas.
 func _rebuild_wall_corners() -> void:
 	_wall_corner_path.clear()
 	_hidden_walls.clear()
-	if grid == null or _corner_model_paths().is_empty():
+	# Los modelos pueden cambiar con el item seleccionado: resolver siempre.
+	_corner_scenes = _resolve_corner_scenes()
+	if grid == null or _corner_scenes.size() < 2:
+		_corner_scenes.clear()
 		return
 
 	var candidates: Array[Dictionary] = []
@@ -727,29 +788,22 @@ func _rebuild_wall_corners() -> void:
 
 
 func _make_corner_info(candidate: Dictionary) -> Dictionary:
-	var paths := _corner_model_paths()
 	var quadrant: int = candidate.quadrant
 	var model_name := "DER"
 	var rotation := 0.0
-	var inner := Vector2(-0.5, 0.0)
-	# Punto interior del modelo (concava) en coordenadas locales.
 	match quadrant:
 		0:
 			model_name = "DER"
 			rotation = 0.0
-			inner = Vector2(-0.5, 0.0)
 		1:
 			model_name = "IZQ"
 			rotation = 0.0
-			inner = Vector2(0.375, 0.0)
 		2:
 			model_name = "DER"
 			rotation = PI
-			inner = Vector2(0.5, 0.0)
 		3:
 			model_name = "IZQ"
 			rotation = PI
-			inner = Vector2(-0.375, 0.0)
 
 	var vertex: Vector2i = candidate.vertex
 	var thick := _wall_model_thickness()
@@ -759,20 +813,25 @@ func _make_corner_info(candidate: Dictionary) -> Dictionary:
 	# Cara interior de los muros normales en ese cuadrante.
 	var inner_x := bx + half - (thick if quadrant in [1, 2] else 0.0)
 	var inner_z := bz + half - (thick if quadrant in [2, 3] else 0.0)
+	# Punto concavo del modelo, rotado igual que la pieza, para que el modelo
+	# quede apoyado en las caras interiores reales.
+	var inner := _corner_inner_point(model_name).rotated(rotation)
 	var position := Vector3(
 		inner_x - inner.x,
 		grid.plane_global_y(),
 		inner_z - inner.y
 	)
-	# El brazo del modelo mide una celda desde la cara interior, pero la celda
-	# se mide desde el vertice de la grilla: la diferencia es exactamente lo
-	# que sobresale y se recorta para no solaparse con la pared contigua.
+	# Extremo libre de cada brazo medido en mundo: el borde de la celda que
+	# cierra la L. Recortar contra este valor absoluto (y no contra la AABB
+	# del modelo) evita que cualquier desfase del modelo vuelva a solaparse.
+	var far_x := grid.global_position.x + float(vertex.x + (1 if quadrant in [0, 3] else -1)) * grid.cell_size
+	var far_z := grid.global_position.z + float(vertex.y + (1 if quadrant in [0, 1] else -1)) * grid.cell_size
 	return {
-		"path": paths.get(model_name, ""),
 		"model": model_name,
 		"rotation": rotation,
 		"position": position,
-		"trim": Vector2(absf(inner_x - bx), absf(inner_z - bz)),
+		"target_x": far_x,
+		"target_z": far_z,
 		"vertex": vertex,
 		"owner_key": candidate.h_key,
 		"covered_key": candidate.v_key,
@@ -790,19 +849,29 @@ func _clear_corner_pieces() -> void:
 ## termine justo en el borde de la celda. Sin esto el brazo (una celda mas el
 ## espesor de la pared) se mete unos centimetros en la pared contigua y las
 ## dos mallas coplanares producen z-fighting de texturas.
-func _trimmed_corner_mesh(mesh_instance: MeshInstance3D, model: String, trim: Vector2) -> Mesh:
+##
+## `limit_x` / `limit_z` estan en el espacio de la pieza y salen del borde de
+## celda absoluto, no de la AABB del modelo: asi el recorte sigue siendo exacto
+## aunque el modelo se mueva o cambie de tamano en Blender.
+func _trimmed_corner_mesh(
+	mesh_instance: MeshInstance3D,
+	piece: Node3D,
+	model: String,
+	limit_x: float,
+	limit_z: float
+) -> Mesh:
 	var source := mesh_instance.mesh
 	if source == null:
 		return null
-	var key := "%d|%s|%.4f|%.4f" % [source.get_instance_id(), model, trim.x, trim.y]
+	var key := "%d|%s|%.4f|%.4f" % [source.get_instance_id(), model, limit_x, limit_z]
 	if _corner_trim_cache.has(key):
 		return _corner_trim_cache[key]
 
-	# AABB en el espacio de la pieza (el nodo puede traer rotacion propia).
-	var xform := mesh_instance.transform
-	var footprint := xform * source.get_aabb()
-	var x_limit := footprint.position.x if model == "IZQ" else footprint.end.x
-	var z_limit := footprint.end.z
+	# Transformacion del mesh respecto de la raiz de la pieza (el nodo
+	# importado puede traer su propia rotacion/offset).
+	var xform := _relative_transform(piece, mesh_instance)
+	var xform_inverse := xform.affine_inverse()
+	var clamp_x_min := model != "IZQ"
 
 	var trimmed := ArrayMesh.new()
 	trimmed.resource_name = source.resource_name
@@ -811,14 +880,9 @@ func _trimmed_corner_mesh(mesh_instance: MeshInstance3D, model: String, trim: Ve
 		var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
 		for i in range(verts.size()):
 			var p := xform * verts[i]
-			if trim.x > 0.0001:
-				if model == "IZQ":
-					p.x = maxf(p.x, x_limit + trim.x)
-				else:
-					p.x = minf(p.x, x_limit - trim.x)
-			if trim.y > 0.0001:
-				p.z = minf(p.z, z_limit - trim.y)
-			verts[i] = xform.affine_inverse() * p
+			p.x = minf(p.x, limit_x) if clamp_x_min else maxf(p.x, limit_x)
+			p.z = minf(p.z, limit_z)
+			verts[i] = xform_inverse * p
 		arrays[Mesh.ARRAY_VERTEX] = verts
 		trimmed.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		var mat := source.surface_get_material(s)
@@ -828,22 +892,43 @@ func _trimmed_corner_mesh(mesh_instance: MeshInstance3D, model: String, trim: Ve
 	return trimmed
 
 
+## Transformacion de `node` relativa a `root`, sin usar transformaciones
+## globales (los nodos importados se miden antes de entrar al arbol).
+static func _relative_transform(root: Node, node: Node) -> Transform3D:
+	var chain: Array[Node] = []
+	var current := node
+	while current != null and current != root:
+		chain.append(current)
+		current = current.get_parent()
+	var xform := Transform3D.IDENTITY
+	for i in range(chain.size() - 1, -1, -1):
+		if chain[i] is Node3D:
+			xform = xform * (chain[i] as Node3D).transform
+	return xform
+
+
 func _spawn_corner_visual(info: Dictionary) -> void:
-	var path: String = info.path
-	if path == "":
-		return
-	var scene := _load_corner_scene(path)
+	var model: String = info.get("model", "DER")
+	var scene: PackedScene = _corner_scenes.get(model)
 	if scene == null:
 		return
 	var piece := _spawn_piece(scene, false)
 	if piece == null:
 		return
-	var mesh_instance := _find_mesh_instance(piece)
-	if mesh_instance != null:
-		var trim: Vector2 = info.get("trim", Vector2.ZERO)
-		var model: String = info.get("model", "DER")
-		if trim.x > 0.0001 or trim.y > 0.0001:
-			mesh_instance.mesh = _trimmed_corner_mesh(mesh_instance, model, trim)
+	var meshes: Array[MeshInstance3D] = []
+	_collect_meshes(piece, meshes)
+	if not meshes.is_empty():
+		var rotation: float = info.get("rotation", 0.0)
+		var position: Vector3 = info.position
+		# La pieza se rota 0 o PI: pasar el borde de celda de mundo al espacio
+		# local invierte el signo cuando la pieza esta girada.
+		var sign := -1.0 if rotation > 1.0 else 1.0
+		var limit_x := (float(info.target_x) - position.x) * sign
+		var limit_z := (float(info.target_z) - position.z) * sign
+		# El modelo puede venir dividido en varias mallas (una por material u
+		# objeto de Blender): hay que recortarlas todas, no solo la primera.
+		for mesh_instance in meshes:
+			mesh_instance.mesh = _trimmed_corner_mesh(mesh_instance, piece, model, limit_x, limit_z)
 	var vertex: Vector2i = info.vertex
 	piece.name = "WallCorner_%d_%d" % [vertex.x, vertex.y]
 	piece.is_wall = true

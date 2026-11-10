@@ -1,8 +1,10 @@
 [gd_resource type="Resource" script_class="BuildItem" format=3 uid="uid://dmgenjxcd4tkw"]
 
 [ext_resource type="Script" uid="uid://dd6mq4ip22kt6" path="res://scripts/sistemas/build/build_item.gd" id="1_script"]
-[ext_resource type="PackedScene" uid="uid://db8an8msnxlbb" path="res://models/build/construccion/wall_basic.blend" id="2_eqq0a"]
+[ext_resource type="PackedScene" uid="uid://brcoyskeiendq" path="res://models/build/construccion/wall_basic_IZQ.glb" id="1_vg131"]
+[ext_resource type="PackedScene" uid="uid://c55s2bh8vwop1" path="res://models/build/construccion/wall_basic_DER.glb" id="2_2dl3b"]
 [ext_resource type="Texture2D" uid="uid://c4bwlescynher" path="res://icon.svg" id="2_preview"]
+[ext_resource type="PackedScene" uid="uid://41rm7chsuyfi" path="res://models/build/construccion/wall_basic.glb" id="4_k24me"]
 
 [resource]
 script = ExtResource("1_script")
@@ -11,7 +13,9 @@ display_name = "Pared básica"
 subcategory = "walls"
 object_type = "wall"
 preview = ExtResource("2_preview")
-scene = ExtResource("2_eqq0a")
+scene = ExtResource("4_k24me")
+corner_left = ExtResource("1_vg131")
+corner_right = ExtResource("2_2dl3b")
 footprint = Vector2i(0, 0)
 can_rotate = true
 notes = "Pared estándar de 1 celda."

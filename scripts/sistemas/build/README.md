@@ -174,6 +174,26 @@ Un item puede usar:
 - `scene`: una escena/PackedScene o modelo importado (`.blend`, etc.).
 - `map_file`: un archivo `.map`/`.vmf` de FuncGodot, que se construirá al colocar la pieza.
 
+### Esquinas de pared
+
+Las esquinas no son items: son piezas visuales que el controlador genera sola
+donde dos paredes forman una L (la pared horizontal queda como dueña de la
+esquina y la vertical se oculta, ambas conservan su colisión).
+
+Un item de tipo `wall` puede declarar sus modelos en el inspector:
+- `corner_left` → modelo para las L que giran a la izquierda (`_IZQ`).
+- `corner_right` → modelo para las L que giran a la derecha (`_DER`).
+
+Si esos campos quedan vacíos, el sistema busca automáticamente
+`<nombre_del_muro>_IZQ.blend` y `<nombre_del_muro>_DER.blend` junto al modelo
+de la pared. Si no hay modelos de esquina, las paredes se recortan como cajas y
+la L se resuelve con dos muros normales.
+
+El sistema deduce la esquina interior y el borde de celda directamente del
+modelo, y recorta **todas** las mallas de la pieza (un `.blend` puede importarse
+dividido en varios objetos). Así los brazos terminan justo en el borde de la
+celda aunque el modelo se mueva o se divida al editar texturas en Blender.
+
 ## Estructura
 
 ```
