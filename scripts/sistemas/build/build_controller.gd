@@ -63,7 +63,15 @@ var _wall_drag_start := Vector3i.ZERO
 var _wall_drag_start_cell := Vector2i.ZERO
 var _wall_drag_ghosts: Array[MeshInstance3D] = []
 var _corner_scene_cache: Dictionary = {}
+## Mallas de esquina recortadas (clave: malla + modelo + recorte) -> ArrayMesh.
+var _corner_trim_cache: Dictionary = {}
+## Esquinas visuales activas: clave de la pared duena -> BuildPiece.
+var _corner_pieces: Dictionary = {}
+## Paredes tapadas por una esquina (se ocultan, pero conservan su colision).
+var _hidden_walls: Dictionary = {}
+## Pared duena -> datos de su esquina (modelo, rotacion, posicion).
 var _wall_corner_path: Dictionary = {}
+var _wall_model_thickness_cache := -1.0
 
 var _player_camera: Camera3D
 var _camera_framed := false
@@ -253,6 +261,9 @@ func get_wall_count() -> int:
 
 func clear_all() -> void:
 	var had_pieces := not _floors.is_empty() or not _walls.is_empty()
+	_clear_corner_pieces()
+	_wall_corner_path.clear()
+	_hidden_walls.clear()
 	for piece: Node in _floors.values():
 		piece.queue_free()
 	for piece: Node in _walls.values():
@@ -330,25 +341,7 @@ func _place_wall(key: Vector3i) -> bool:
 func _place_wall_silent(key: Vector3i) -> bool:
 	if not _can_place_wall(key):
 		return false
-
-	var piece := _spawn_current_piece()
-	if piece == null:
-		return false
-
-	piece.is_wall = true
-	piece.wall_key = key
-	piece.name = "Wall_%d_%d_%d" % [key.x, key.y, key.z]
-	piece.global_transform = Transform3D(
-		Basis(Vector3.UP, grid.wall_yaw(key)),
-		grid.wall_center(key) + Vector3.UP * (wall_height * 0.5)
-	)
-	var mesh_instance := piece.get_node_or_null("MeshInstance3D") as MeshInstance3D
-	if mesh_instance == null:
-		var col := piece.get_node_or_null("CollisionShape3D") as CollisionShape3D
-		piece.global_position = grid.wall_center(key)
-	piece.set_dimensions(Vector3(grid.cell_size, wall_height, wall_thickness))
-	_walls[key] = piece
-	return true
+	return _spawn_wall_piece(key) != null
 
 
 # --------------------------------------------------------------------------
@@ -508,6 +501,9 @@ func _apply_selected_item() -> void:
 			tool = Tool.WALL
 			if scene != null:
 				wall_scene = scene
+				_wall_model_thickness_cache = -1.0
+				_corner_scene_cache.clear()
+				_corner_trim_cache.clear()
 		_:
 			# Tipos aún no colocables (techo, aberturas, muebles, ...).
 			pass
@@ -555,14 +551,17 @@ func _has_perp_neighbor(key: Vector3i, end: int) -> bool:
 func _refresh_wall_shapes() -> void:
 	if grid == null:
 		return
-	var trim := wall_thickness * 0.5
+	# Los modelos importados no se redimensionan: su posicion ya la fija
+	# _spawn_wall_piece. Solo las cajas procedurales se recortan en las
+	# uniones que no llevan pieza de esquina.
 	for key in _walls.keys():
 		var piece: BuildPiece = _walls[key]
 		if not is_instance_valid(piece):
 			continue
-		# Las esquinas usan modelo importado: no recortar ni reemplazar su mesh.
-		if _corner_model_path(key) != "":
+		var piece_mi := piece.get_node_or_null("MeshInstance3D") as MeshInstance3D
+		if piece_mi == null or not (piece_mi.mesh is BoxMesh):
 			continue
+		var trim := wall_thickness * 0.5
 		var has_left := _has_perp_neighbor(key, 0)
 		var has_right := _has_perp_neighbor(key, 1)
 		var length := grid.cell_size
@@ -577,66 +576,34 @@ func _refresh_wall_shapes() -> void:
 			length = 0.05
 		piece.set_dimensions(Vector3(length, wall_height, wall_thickness))
 		var center := grid.wall_center(key)
-		var yaw := grid.wall_yaw(key)
-		var piece_mi := piece.get_node_or_null("MeshInstance3D") as MeshInstance3D
-		var y_offset := wall_height * 0.5 if piece_mi != null else 0.0
 		if key.z == 1:
-			piece.global_position = center + Vector3(offset, y_offset, 0.0)
+			piece.global_position = center + Vector3(offset, wall_height * 0.5, 0.0)
 		else:
-			piece.global_position = center + Vector3(0.0, y_offset, offset)
-		piece.global_rotation = Vector3(0.0, yaw, 0.0)
+			piece.global_position = center + Vector3(0.0, wall_height * 0.5, offset)
+		piece.global_rotation = Vector3(0.0, grid.wall_yaw(key), 0.0)
 
 
-func _corner_model_path(key: Vector3i) -> String:
-	if _has_perp_neighbor(key, 1):
-		return "res://models/build/construccion/wall_basic_IZQ.blend"
-	if _has_perp_neighbor(key, 0):
-		return "res://models/build/construccion/wall_basic_DER.blend"
-	return ""
-
-
+## Crea la pieza fisica de una pared (siempre el muro normal, con colision).
+## La esquina, si toca, se anade aparte como pieza puramente visual.
 func _spawn_wall_piece(key: Vector3i) -> BuildPiece:
-	var model_path := _corner_model_path(key)
 	var piece: BuildPiece
-	var used_corner_model := false
-
-	if model_path != "":
-		var corner_scene := _load_corner_scene(model_path)
-		if corner_scene != null:
-			# Usar el modelo de esquina directamente (envolviendolo como pieza)
-			# para que la malla importada se conserve en todos los casos.
-			piece = _spawn_piece(corner_scene)
-			used_corner_model = piece != null
-
-	if not used_corner_model:
+	if _active_map_file != "":
+		piece = _spawn_map_piece(_active_map_file)
+	else:
 		piece = _spawn_piece(wall_scene)
+	if piece == null:
+		return null
 
 	piece.is_wall = true
 	piece.wall_key = key
 	piece.name = "Wall_%d_%d_%d" % [key.x, key.y, key.z]
-
-	if used_corner_model:
-		# El modelo importado tiene el pivote en la base: alinear su AABB al origen
-		# de la pieza para que la colision coincida con la geometria.
-		for child in piece.get_children():
-			if child is Node3D and not (child is CollisionShape3D):
-				var aabb := _compute_aabb(child)
-				if aabb.size != Vector3.ZERO:
-					child.position = -aabb.position
-		piece.global_position = grid.wall_center(key)
-		if key.z == 0:
-			piece.global_rotation = Vector3(0.0, PI * 0.5, 0.0)
-		else:
-			piece.global_rotation = Vector3.ZERO
+	piece.set_dimensions(Vector3(grid.cell_size, wall_height, wall_thickness))
+	var piece_mi := piece.get_node_or_null("MeshInstance3D") as MeshInstance3D
+	if piece_mi != null:
+		piece.global_position = grid.wall_center(key) + Vector3.UP * (wall_height * 0.5)
 	else:
-		piece.set_dimensions(Vector3(grid.cell_size, wall_height, wall_thickness))
-		var piece_mi := piece.get_node_or_null("MeshInstance3D") as MeshInstance3D
-		if piece_mi != null:
-			piece.global_position = grid.wall_center(key) + Vector3.UP * (wall_height * 0.5)
-		else:
-			piece.global_position = grid.wall_center(key)
-		piece.global_rotation = Vector3(0.0, grid.wall_yaw(key), 0.0)
-
+		piece.global_position = grid.wall_center(key)
+	piece.global_rotation = Vector3(0.0, grid.wall_yaw(key), 0.0)
 	_walls[key] = piece
 	return piece
 
@@ -662,30 +629,249 @@ func _find_mesh_instance(node: Node) -> MeshInstance3D:
 	return null
 
 
+## Ruta de los modelos de esquina derivada del muro actual. Si el muro no
+## tiene variantes _IZQ/_DER, no se usan esquinas.
+func _corner_model_paths() -> Dictionary:
+	if wall_scene == null or _active_map_file != "":
+		return {}
+	var path := wall_scene.resource_path
+	if path.get_extension() != "blend":
+		return {}
+	var base := path.get_basename()
+	var izq := "%s_IZQ.blend" % base
+	var der := "%s_DER.blend" % base
+	if not ResourceLoader.exists(izq) or not ResourceLoader.exists(der):
+		return {}
+	return {"IZQ": izq, "DER": der}
+
+
+## Grosor real del modelo de muro (no siempre coincide con wall_thickness).
+func _wall_model_thickness() -> float:
+	if _wall_model_thickness_cache > 0.0:
+		return _wall_model_thickness_cache
+	if wall_scene != null:
+		var instance := wall_scene.instantiate()
+		if instance is Node3D:
+			var aabb := _compute_aabb(instance)
+			if aabb.size.z > 0.001:
+				_wall_model_thickness_cache = aabb.size.z
+		instance.free()
+	if _wall_model_thickness_cache <= 0.0:
+		_wall_model_thickness_cache = wall_thickness
+	return _wall_model_thickness_cache
+
+
+## Calcula que paredes forman esquina y con que modelo/rotacion. En cada
+## esquina una pared se convierte en la pieza de esquina y la otra se oculta,
+## de modo que nunca hay dos esquinas superpuestas.
+func _rebuild_wall_corners() -> void:
+	_wall_corner_path.clear()
+	_hidden_walls.clear()
+	if grid == null or _corner_model_paths().is_empty():
+		return
+
+	var candidates: Array[Dictionary] = []
+	for key: Vector3i in _walls.keys():
+		if key.z != 1:
+			continue
+		for end: int in [0, 1]:
+			# Si el muro sigue recto, este vertice no es una L.
+			var neighbor_x := key.x - 1 if end == 0 else key.x + 1
+			if _walls.has(Vector3i(neighbor_x, key.y, 1)):
+				continue
+			var vx := key.x + end
+			var hz := key.y
+			var plus_key := Vector3i(vx, hz, 0)
+			var minus_key := Vector3i(vx, hz - 1, 0)
+			var has_plus := _walls.has(plus_key)
+			var has_minus := _walls.has(minus_key)
+			# Ninguna pared perpendicular (recta) o dos (cruz/T): no es L.
+			if has_plus == has_minus:
+				continue
+			var quadrant := 0
+			if end == 0 and has_plus:
+				quadrant = 0 # +X, +Z
+			elif end == 1 and has_plus:
+				quadrant = 1 # -X, +Z
+			elif end == 1 and has_minus:
+				quadrant = 2 # -X, -Z
+			else:
+				quadrant = 3 # +X, -Z
+			candidates.append({
+				"h_key": key,
+				"v_key": plus_key if has_plus else minus_key,
+				"vertex": Vector2i(vx, hz),
+				"quadrant": quadrant,
+			})
+
+	candidates.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		var va: Vector2i = a.vertex
+		var vb: Vector2i = b.vertex
+		if va.x != vb.x:
+			return va.x < vb.x
+		return va.y < vb.y
+	)
+
+	# Cada esquina consume las dos paredes que se cruzan. Si una ya fue usada
+	# por otra esquina, se deja como muro normal (ya queda tapada por ella).
+	var used := {}
+	for candidate in candidates:
+		var h_key: Vector3i = candidate.h_key
+		var v_key: Vector3i = candidate.v_key
+		if used.has(h_key) or used.has(v_key):
+			continue
+		used[h_key] = true
+		used[v_key] = true
+		_wall_corner_path[h_key] = _make_corner_info(candidate)
+		_hidden_walls[v_key] = true
+
+
+func _make_corner_info(candidate: Dictionary) -> Dictionary:
+	var paths := _corner_model_paths()
+	var quadrant: int = candidate.quadrant
+	var model_name := "DER"
+	var rotation := 0.0
+	var inner := Vector2(-0.5, 0.0)
+	# Punto interior del modelo (concava) en coordenadas locales.
+	match quadrant:
+		0:
+			model_name = "DER"
+			rotation = 0.0
+			inner = Vector2(-0.5, 0.0)
+		1:
+			model_name = "IZQ"
+			rotation = 0.0
+			inner = Vector2(0.375, 0.0)
+		2:
+			model_name = "DER"
+			rotation = PI
+			inner = Vector2(0.5, 0.0)
+		3:
+			model_name = "IZQ"
+			rotation = PI
+			inner = Vector2(-0.375, 0.0)
+
+	var vertex: Vector2i = candidate.vertex
+	var thick := _wall_model_thickness()
+	var half := wall_thickness * 0.5
+	var bx := grid.global_position.x + vertex.x * grid.cell_size
+	var bz := grid.global_position.z + vertex.y * grid.cell_size
+	# Cara interior de los muros normales en ese cuadrante.
+	var inner_x := bx + half - (thick if quadrant in [1, 2] else 0.0)
+	var inner_z := bz + half - (thick if quadrant in [2, 3] else 0.0)
+	var position := Vector3(
+		inner_x - inner.x,
+		grid.plane_global_y(),
+		inner_z - inner.y
+	)
+	# El brazo del modelo mide una celda desde la cara interior, pero la celda
+	# se mide desde el vertice de la grilla: la diferencia es exactamente lo
+	# que sobresale y se recorta para no solaparse con la pared contigua.
+	return {
+		"path": paths.get(model_name, ""),
+		"model": model_name,
+		"rotation": rotation,
+		"position": position,
+		"trim": Vector2(absf(inner_x - bx), absf(inner_z - bz)),
+		"vertex": vertex,
+		"owner_key": candidate.h_key,
+		"covered_key": candidate.v_key,
+	}
+
+
+func _clear_corner_pieces() -> void:
+	for piece in _corner_pieces.values():
+		if is_instance_valid(piece):
+			piece.queue_free()
+	_corner_pieces.clear()
+
+
+## Recorta el extremo libre de los brazos del modelo de esquina para que
+## termine justo en el borde de la celda. Sin esto el brazo (una celda mas el
+## espesor de la pared) se mete unos centimetros en la pared contigua y las
+## dos mallas coplanares producen z-fighting de texturas.
+func _trimmed_corner_mesh(mesh_instance: MeshInstance3D, model: String, trim: Vector2) -> Mesh:
+	var source := mesh_instance.mesh
+	if source == null:
+		return null
+	var key := "%d|%s|%.4f|%.4f" % [source.get_instance_id(), model, trim.x, trim.y]
+	if _corner_trim_cache.has(key):
+		return _corner_trim_cache[key]
+
+	# AABB en el espacio de la pieza (el nodo puede traer rotacion propia).
+	var xform := mesh_instance.transform
+	var footprint := xform * source.get_aabb()
+	var x_limit := footprint.position.x if model == "IZQ" else footprint.end.x
+	var z_limit := footprint.end.z
+
+	var trimmed := ArrayMesh.new()
+	trimmed.resource_name = source.resource_name
+	for s in range(source.get_surface_count()):
+		var arrays := source.surface_get_arrays(s)
+		var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+		for i in range(verts.size()):
+			var p := xform * verts[i]
+			if trim.x > 0.0001:
+				if model == "IZQ":
+					p.x = maxf(p.x, x_limit + trim.x)
+				else:
+					p.x = minf(p.x, x_limit - trim.x)
+			if trim.y > 0.0001:
+				p.z = minf(p.z, z_limit - trim.y)
+			verts[i] = xform.affine_inverse() * p
+		arrays[Mesh.ARRAY_VERTEX] = verts
+		trimmed.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		var mat := source.surface_get_material(s)
+		if mat != null:
+			trimmed.surface_set_material(trimmed.get_surface_count() - 1, mat)
+	_corner_trim_cache[key] = trimmed
+	return trimmed
+
+
+func _spawn_corner_visual(info: Dictionary) -> void:
+	var path: String = info.path
+	if path == "":
+		return
+	var scene := _load_corner_scene(path)
+	if scene == null:
+		return
+	var piece := _spawn_piece(scene, false)
+	if piece == null:
+		return
+	var mesh_instance := _find_mesh_instance(piece)
+	if mesh_instance != null:
+		var trim: Vector2 = info.get("trim", Vector2.ZERO)
+		var model: String = info.get("model", "DER")
+		if trim.x > 0.0001 or trim.y > 0.0001:
+			mesh_instance.mesh = _trimmed_corner_mesh(mesh_instance, model, trim)
+	var vertex: Vector2i = info.vertex
+	piece.name = "WallCorner_%d_%d" % [vertex.x, vertex.y]
+	piece.is_wall = true
+	piece.global_transform = Transform3D(
+		Basis(Vector3.UP, info.rotation),
+		info.position
+	)
+	_corner_pieces[info.owner_key] = piece
+
+
 func _refresh_wall_variants() -> void:
 	if grid == null:
 		return
-	var keys = _walls.keys().duplicate()
+	_clear_corner_pieces()
+	_rebuild_wall_corners()
+
+	var keys := _walls.keys().duplicate()
 	for key in keys:
 		var old_piece = _walls[key]
 		if is_instance_valid(old_piece):
 			old_piece.queue_free()
-		_spawn_wall_piece(key)
+		var piece := _spawn_wall_piece(key)
+		if piece == null:
+			continue
+		piece.visible = not _hidden_walls.has(key) and not _wall_corner_path.has(key)
 
-		# Evitar solapamiento visual: los muros horizontales cubiertos por una
-		# esquina (L) se ocultan, pero conservan su colision para la navegacion.
-		for wall_key in _walls.keys():
-			var piece = _walls[wall_key]
-			if is_instance_valid(piece):
-				piece.visible = true
-		for corner_key in _wall_corner_path.keys():
-			for bz in [corner_key.y, corner_key.y + 1]:
-				for hx in [corner_key.x - 1, corner_key.x]:
-					var hk = Vector3i(hx, bz, 1)
-					if _walls.has(hk):
-						var piece = _walls[hk]
-						if is_instance_valid(piece):
-							piece.visible = false
+	for owner_key in _wall_corner_path.keys():
+		_spawn_corner_visual(_wall_corner_path[owner_key])
 
 
 func _spawn_current_piece() -> BuildPiece:
@@ -737,7 +923,7 @@ func _spawn_map_piece(map_path: String) -> BuildPiece:
 	return piece
 
 
-func _spawn_piece(scene: PackedScene) -> BuildPiece:
+func _spawn_piece(scene: PackedScene, with_collision: bool = true) -> BuildPiece:
 	if scene == null:
 		push_warning("BuildController: falta un prefab de pieza.")
 		return null
@@ -746,6 +932,10 @@ func _spawn_piece(scene: PackedScene) -> BuildPiece:
 	var piece: BuildPiece
 	if instance is BuildPiece:
 		piece = instance as BuildPiece
+		if not with_collision:
+			var old_collision := piece.get_node_or_null("CollisionShape3D") as CollisionShape3D
+			if old_collision != null:
+				old_collision.queue_free()
 	else:
 		if not (instance is Node3D):
 			push_warning("BuildController: el prefab no es una pieza ni un nodo 3D.")
@@ -756,18 +946,19 @@ func _spawn_piece(scene: PackedScene) -> BuildPiece:
 				child.queue_free()
 		piece = BuildPiece.new()
 		piece.name = instance.name
-		var aabb := _compute_aabb(instance)
-		if aabb.size == Vector3.ZERO:
-			aabb.size = Vector3.ONE
 		# Conservar el origen del modelo; no recentrarlo.
 		piece.add_child(instance)
-		var collision := CollisionShape3D.new()
-		collision.name = "CollisionShape3D"
-		var box := BoxShape3D.new()
-		box.size = aabb.size
-		collision.shape = box
-		collision.position = aabb.position + aabb.size * 0.5
-		piece.add_child(collision)
+		if with_collision:
+			var aabb := _compute_aabb(instance)
+			if aabb.size == Vector3.ZERO:
+				aabb.size = Vector3.ONE
+			var collision := CollisionShape3D.new()
+			collision.name = "CollisionShape3D"
+			var box := BoxShape3D.new()
+			box.size = aabb.size
+			collision.shape = box
+			collision.position = aabb.position + aabb.size * 0.5
+			piece.add_child(collision)
 
 	var parent: Node = pieces_root if pieces_root != null else self
 	parent.add_child(piece)

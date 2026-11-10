@@ -1,9 +1,9 @@
 [gd_scene format=3 uid="uid://gdob03jhkl3g"]
 
 [ext_resource type="Script" uid="uid://dyu7hw868nob" path="res://scenes/demo/nav_demo.gd" id="1_demo"]
-[ext_resource type="PackedScene" uid="uid://cyeiic54bgiqd" path="res://scripts/characters/player/fps_player.tscn" id="2_player"]
+[ext_resource type="PackedScene" uid="uid://cyeiic54bgiqd" path="res://scripts/Characters/player/fps_player.tscn" id="2_player"]
 [ext_resource type="PackedScene" path="res://scripts/sistemas/build/build_system.tscn" id="3_build"]
-[ext_resource type="PackedScene" path="res://scripts/characters/npc/npc.tscn" id="4_npc"]
+[ext_resource type="PackedScene" path="res://scripts/Characters/npc/npc.tscn" id="4_npc"]
 
 
 [sub_resource type="Environment" id="Environment_main"]

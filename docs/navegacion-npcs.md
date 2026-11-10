@@ -3,7 +3,7 @@
 | Campo | Valor |
 | --- | --- |
 | Proyecto | Proyecto Hospital (Godot 4.7) |
-| Módulos | `res://scripts/sistemas/build/`, `res://scripts/characters/npc/` |
+| Módulos | `res://scripts/sistemas/build/`, `res://scripts/Characters/npc/` |
 | Versión del documento | 1.0 |
 | Estado | Implementado y verificado |
 | Fecha | 2026-11-08 |
@@ -54,8 +54,8 @@ piezas.
 | `scripts/sistemas/build/build_navigation.gd` | Configura el NavMesh, escucha cambios, aplica debounce y hornea. |
 | `scripts/sistemas/build/build_system.tscn` | Ensambla grilla, cámara, `NavRegion`, controlador y navegación. |
 | `scripts/sistemas/build/build_controller.gd` | Emite `pieces_changed` y expone la API de colocación. |
-| `scripts/characters/npc/npc_agent.gd` | `CharacterBody3D` con `NavigationAgent3D`, deambular y animación. |
-| `scripts/characters/npc/npc.tscn` | Prefab de NPC con el modelo y las animaciones del jugador. |
+| `scripts/Characters/npc/npc_agent.gd` | `CharacterBody3D` con `NavigationAgent3D`, deambular y animación. |
+| `scripts/Characters/npc/npc.tscn` | Prefab de NPC con el modelo y las animaciones del jugador. |
 | `scenes/demo/nav_demo.tscn` | Demo con habitaciones, puertas, 4 NPC y HUD. |
 | `tests/nav_smoke_test.gd` | Prueba headless del NavMesh y del rebake. |
 
@@ -166,7 +166,7 @@ func get_polygon_count() -> int
 
 ### 4.1 Prefab
 
-`scripts/characters/npc/npc.tscn` replica la estructura del jugador, pero sin el controlador FPS,
+`scripts/Characters/npc/npc.tscn` replica la estructura del jugador, pero sin el controlador FPS,
 la cámara, el hueso de cabeza ni la linterna:
 
 ```
@@ -348,8 +348,8 @@ NAV_SMOKE_TEST_OK
 - `scripts/sistemas/build/build_navigation.gd`
 - `scripts/sistemas/build/build_system.tscn`
 - `scripts/sistemas/build/build_controller.gd`
-- `scripts/characters/npc/npc_agent.gd`
-- `scripts/characters/npc/npc.tscn`
+- `scripts/Characters/npc/npc_agent.gd`
+- `scripts/Characters/npc/npc.tscn`
 - `scenes/demo/nav_demo.tscn`
 - `tests/nav_smoke_test.gd`
 - `scripts/sistemas/build/README.md`

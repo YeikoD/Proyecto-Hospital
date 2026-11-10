@@ -70,7 +70,7 @@ Pasos recomendados:
 4. Ajustar en `BuildController` (opcional):
    - `wall_height`, `wall_thickness`, `floor_thickness`.
    - `floor_scene` / `wall_scene` para usar otros prefabs.
-5. Para NPCs, instanciar `scripts/characters/npc/npc.tscn` o añadir un `NavigationAgent3D` +
+5. Para NPCs, instanciar `scripts/Characters/npc/npc.tscn` o añadir un `NavigationAgent3D` +
    `NpcAgent` a un personaje propio.
 
 El sistema busca solo la grilla, la cámara, el `FPSPlayer`, el `NavRegion` y el
@@ -108,7 +108,7 @@ También expone `bake_count`, `is_baking()`, `get_polygon_count()`,
 
 ### API del NPC
 
-`scripts/characters/npc/npc_agent.gd` (`class_name NpcAgent`) extiende `CharacterBody3D` y usa un
+`scripts/Characters/npc/npc_agent.gd` (`class_name NpcAgent`) extiende `CharacterBody3D` y usa un
 `NavigationAgent3D` hijo:
 
 ```gdscript
@@ -131,7 +131,7 @@ su camino actual.
 
 ### Prefab del NPC
 
-`scripts/characters/npc/npc.tscn` reutiliza la estructura del jugador, pero sin el controlador FPS,
+`scripts/Characters/npc/npc.tscn` reutiliza la estructura del jugador, pero sin el controlador FPS,
 la cámara ni la linterna:
 
 ```

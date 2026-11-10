@@ -87,8 +87,8 @@ build_system.tscn
 | `scripts/sistemas/build/prefabs/floor_tile.tscn` | Prefab de suelo (caja 1×0.1×1). |
 | `scripts/sistemas/build/prefabs/wall_segment.tscn` | Prefab de pared (caja 1×2.8×0.2). |
 | `scripts/sistemas/build/build_system.tscn` | Escena ensamblada lista para arrastrar a un nivel. |
-| `scripts/characters/npc/npc_agent.gd` | `CharacterBody3D` con `NavigationAgent3D`, deambular y animación. |
-| `scripts/characters/npc/npc.tscn` | Prefab de NPC con el modelo y las animaciones del jugador. |
+| `scripts/Characters/npc/npc_agent.gd` | `CharacterBody3D` con `NavigationAgent3D`, deambular y animación. |
+| `scripts/Characters/npc/npc.tscn` | Prefab de NPC con el modelo y las animaciones del jugador. |
 | `scenes/build_demo.tscn` | Escena de demostración independiente. |
 | `scenes/demo/nav_demo.tscn` | Demo con habitaciones, puertas, NPC y NavMesh. |
 | `tests/build_smoke_test.gd` | Prueba automática headless del núcleo. |
@@ -633,7 +633,7 @@ Valores por defecto del controlador: `floor_thickness = 0.1`,
    `floor_thickness`, `floor_scene`, `wall_scene`, `show_help`,
    `start_in_build_mode`.
 5. La navegación ya viene incluida: `NavRegion` contiene `PlacedPieces` y
-   `BuildNavigation` hornea el NavMesh. Para NPCs, instanciar `scripts/characters/npc/npc.tscn`.
+   `BuildNavigation` hornea el NavMesh. Para NPCs, instanciar `scripts/Characters/npc/npc.tscn`.
 
 La escena debe contener un `FPSController` (jugador del proyecto).
 
@@ -671,7 +671,7 @@ los suelos son caminables y las paredes recortan el área. Un
 `filter_baking_aabb` limita la altura para que los techos de las paredes no se
 vuelvan caminables.
 
-Los NPC usan `scripts/characters/npc/npc.tscn` (`NpcAgent` + `NavigationAgent3D`) y se mueven con:
+Los NPC usan `scripts/Characters/npc/npc.tscn` (`NpcAgent` + `NavigationAgent3D`) y se mueven con:
 
 ```gdscript
 npc.move_to(Vector3(10.0, 0.0, 4.0))
@@ -897,8 +897,8 @@ NAV_SMOKE_TEST_OK
 - `scripts/sistemas/build/build_system.tscn` — escena ensamblada.
 - `scripts/sistemas/build/build_navigation.gd` — horneado del NavMesh.
 - `scripts/sistemas/build/README.md` — guía rápida de uso.
-- `scripts/characters/npc/npc_agent.gd` — movimiento y deambular de NPC.
-- `scripts/characters/npc/npc.tscn` — prefab de NPC con modelo/animaciones del jugador.
+- `scripts/Characters/npc/npc_agent.gd` — movimiento y deambular de NPC.
+- `scripts/Characters/npc/npc.tscn` — prefab de NPC con modelo/animaciones del jugador.
 - `scenes/build_demo.tscn` — demo ejecutable.
 - `scenes/demo/nav_demo.tscn` — demo de navegación.
 - `tests/build_smoke_test.gd` — prueba automática de construcción.
