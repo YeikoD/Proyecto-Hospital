@@ -3,13 +3,13 @@
 importer="scene"
 importer_version=1
 type="PackedScene"
-uid="uid://b4jvqo238agyk"
-path="res://.godot/imported/wall_basic_IZQ.blend-7b61b6a479ebe2631ad79f6f9fe13ff4.scn"
+uid="uid://bk1kaan1tdki1"
+path="res://.godot/imported/floor_exterior_01.blend-508d3336f83a703a385940b9fb0a8c3c.scn"
 
 [deps]
 
-source_file="res://models/build/construccion/wall_basic_IZQ.blend"
-dest_files=["res://.godot/imported/wall_basic_IZQ.blend-7b61b6a479ebe2631ad79f6f9fe13ff4.scn"]
+source_file="res://models/build/construccion/floor/floor_exterior_01.blend"
+dest_files=["res://.godot/imported/floor_exterior_01.blend-508d3336f83a703a385940b9fb0a8c3c.scn"]
 
 [params]
 

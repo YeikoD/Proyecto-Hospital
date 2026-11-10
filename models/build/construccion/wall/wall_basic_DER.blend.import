@@ -3,13 +3,13 @@
 importer="scene"
 importer_version=1
 type="PackedScene"
-uid="uid://db8an8msnxlbb"
-path="res://.godot/imported/wall_basic.blend-07c61f50fc68249cf968b109d0682e04.scn"
+uid="uid://cwx1lpjogwsy2"
+path="res://.godot/imported/wall_basic_DER.blend-3128ea9920ceeb5fa135b3899139271a.scn"
 
 [deps]
 
-source_file="res://models/build/construccion/wall_basic.blend"
-dest_files=["res://.godot/imported/wall_basic.blend-07c61f50fc68249cf968b109d0682e04.scn"]
+source_file="res://models/build/construccion/wall/wall_basic_DER.blend"
+dest_files=["res://.godot/imported/wall_basic_DER.blend-3128ea9920ceeb5fa135b3899139271a.scn"]
 
 [params]
 

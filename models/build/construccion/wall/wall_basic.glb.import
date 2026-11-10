@@ -4,12 +4,12 @@ importer="scene"
 importer_version=1
 type="PackedScene"
 uid="uid://41rm7chsuyfi"
-path="res://.godot/imported/wall_basic.glb-d8691a67194363f25a9de3a35b460b64.scn"
+path="res://.godot/imported/wall_basic.glb-d66d3443ceecc486626e74520395e317.scn"
 
 [deps]
 
-source_file="res://models/build/construccion/wall_basic.glb"
-dest_files=["res://.godot/imported/wall_basic.glb-d8691a67194363f25a9de3a35b460b64.scn"]
+source_file="res://models/build/construccion/wall/wall_basic.glb"
+dest_files=["res://.godot/imported/wall_basic.glb-d66d3443ceecc486626e74520395e317.scn"]
 
 [params]
 

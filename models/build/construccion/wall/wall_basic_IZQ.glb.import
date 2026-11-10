@@ -4,12 +4,12 @@ importer="scene"
 importer_version=1
 type="PackedScene"
 uid="uid://brcoyskeiendq"
-path="res://.godot/imported/wall_basic_IZQ.glb-b4cebcfd838d5131d9b052e985283edd.scn"
+path="res://.godot/imported/wall_basic_IZQ.glb-35c23dcc72d72960c6aa5a4d5a298163.scn"
 
 [deps]
 
-source_file="res://models/build/construccion/wall_basic_IZQ.glb"
-dest_files=["res://.godot/imported/wall_basic_IZQ.glb-b4cebcfd838d5131d9b052e985283edd.scn"]
+source_file="res://models/build/construccion/wall/wall_basic_IZQ.glb"
+dest_files=["res://.godot/imported/wall_basic_IZQ.glb-35c23dcc72d72960c6aa5a4d5a298163.scn"]
 
 [params]
 

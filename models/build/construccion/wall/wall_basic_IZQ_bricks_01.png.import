@@ -2,8 +2,8 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://dr8mllryqynfa"
-path.s3tc="res://.godot/imported/wall_basic_bricks_01.png-e1b43187fa194187170642f0a9aa119f.s3tc.ctex"
+uid="uid://d387872t84op0"
+path.s3tc="res://.godot/imported/wall_basic_IZQ_bricks_01.png-ef50c153bfb21c1dbe4a57941c58093f.s3tc.ctex"
 metadata={
 "imported_formats": ["s3tc_bptc"],
 "vram_texture": true
@@ -14,8 +14,8 @@ generator_parameters={
 
 [deps]
 
-source_file="res://models/build/construccion/wall_basic_bricks_01.png"
-dest_files=["res://.godot/imported/wall_basic_bricks_01.png-e1b43187fa194187170642f0a9aa119f.s3tc.ctex"]
+source_file="res://models/build/construccion/wall/wall_basic_IZQ_bricks_01.png"
+dest_files=["res://.godot/imported/wall_basic_IZQ_bricks_01.png-ef50c153bfb21c1dbe4a57941c58093f.s3tc.ctex"]
 
 [params]
 
