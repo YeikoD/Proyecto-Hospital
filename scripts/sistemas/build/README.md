@@ -36,6 +36,7 @@ Godot.exe --path . res://scenes/demo/nav_demo.tscn
 | `2` | Herramienta pared |
 | `3` | Herramienta borrar |
 | Clic izquierdo | Colocar / borrar (arrastrar pinta varias celdas) |
+| Clic izquierdo + arrastrar (pared) | Dibuja una linea recta de paredes entre dos puntos |
 | Clic derecho / central + arrastrar | Orbitar la cámara |
 | Rueda | Zoom |
 | `WASD` | Desplazar la cámara |

@@ -5,6 +5,7 @@
 [ext_resource type="Script" uid="uid://cwu5cf7a0awcd" path="res://addons/func_godot/src/map/func_godot_map.gd" id="3_ybfri"]
 [ext_resource type="Texture2D" uid="uid://vc4apduw8s7s" path="res://addons/func_godot/textures/default_texture.png" id="4_dkkdp"]
 [ext_resource type="Resource" uid="uid://bkhxcqsquw1yg" path="res://addons/func_godot/func_godot_default_map_settings.tres" id="4_e28x7"]
+[ext_resource type="Material" uid="uid://cl23cvr0l0hfg" path="res://maps/textures/Tiny/Grass/Grass_20-512x512.tres" id="4_pwlei"]
 [ext_resource type="PackedScene" path="res://scripts/characters/npc/npc.tscn" id="6_e28x7"]
 
 [sub_resource type="Environment" id="Environment_main"]
@@ -85,6 +86,7 @@ metadata/_custom_type_script = "uid://cwu5cf7a0awcd"
 collision_mask = 0
 
 [node name="entity_0_mesh_instance" type="MeshInstance3D" parent="FuncGodotMap/entity_0_worldspawn" unique_id=1075065971]
+material_override = ExtResource("4_pwlei")
 mesh = SubResource("ArrayMesh_qsnn4")
 
 [node name="entity_0_brush_0_collision_shape" type="CollisionShape3D" parent="FuncGodotMap/entity_0_worldspawn" unique_id=840724262]

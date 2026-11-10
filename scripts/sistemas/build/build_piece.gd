@@ -22,6 +22,14 @@ func set_dimensions(size: Vector3) -> void:
 		# Pieza con modelo arbitrario: conservar malla y colision ya creadas.
 		return
 
+	# Solo redimensionar mallas procedurales (cajas). Las mallas importadas
+	# (esquinas, mapas) se conservan para no destruir su geometria.
+	if not (_mesh_instance.mesh is BoxMesh):
+		if _collision != null and _collision.shape is BoxShape3D:
+			var shape := _collision.shape as BoxShape3D
+			shape.size = size
+		return
+
 	var old_mesh := _mesh_instance.mesh as BoxMesh
 	var box := BoxMesh.new()
 	box.size = size

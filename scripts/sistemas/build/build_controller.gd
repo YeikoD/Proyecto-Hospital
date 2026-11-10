@@ -58,6 +58,12 @@ var _hover_cell := Vector2i.ZERO
 var _hover_wall := Vector3i.ZERO
 var _hovering := false
 var _painting := false
+var _wall_dragging := false
+var _wall_drag_start := Vector3i.ZERO
+var _wall_drag_start_cell := Vector2i.ZERO
+var _wall_drag_ghosts: Array[MeshInstance3D] = []
+var _corner_scene_cache: Dictionary = {}
+var _wall_corner_path: Dictionary = {}
 
 var _player_camera: Camera3D
 var _camera_framed := false
@@ -137,6 +143,8 @@ func exit_build_mode() -> void:
 	set_process(false)
 	_painting = false
 	_hovering = false
+	_clear_wall_drag_ghosts()
+	_wall_dragging = false
 	_hide_ghosts()
 
 	if build_camera != null:
@@ -198,15 +206,34 @@ func _process(_delta: float) -> void:
 		return
 
 	_hovering = _update_hover()
+
+	# Permitir terminar un arrastre de paredes aunque el cursor salga de la grilla.
+	if tool == Tool.WALL and _wall_dragging:
+		if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+			if _hovering:
+				_update_wall_drag()
+		else:
+			_finish_wall_drag()
+			_hide_ghosts()
+			_update_ui()
+			return
+
 	if not _hovering:
 		_painting = false
 		_hide_ghosts()
 		_update_ui()
 		return
 
-	_painting = Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
-	if _painting:
-		_apply_tool()
+	if tool == Tool.WALL:
+		if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+			if not _wall_dragging:
+				_start_wall_drag()
+			if _wall_dragging:
+				_update_wall_drag()
+	else:
+		_painting = Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
+		if _painting:
+			_apply_tool()
 
 	_update_ghosts()
 	_update_ui()
@@ -280,7 +307,11 @@ func _place_floor(cell: Vector2i) -> bool:
 	piece.is_wall = false
 	piece.cell = cell
 	piece.name = "Floor_%d_%d" % [cell.x, cell.y]
-	piece.global_position = grid.cell_center(cell) - Vector3.UP * (floor_thickness * 0.5)
+	var floor_mi := piece.get_node_or_null("MeshInstance3D") as MeshInstance3D
+	if floor_mi != null:
+		piece.global_position = grid.cell_center(cell) - Vector3.UP * (floor_thickness * 0.5)
+	else:
+		piece.global_position = grid.cell_center(cell)
 	piece.set_dimensions(Vector3(grid.cell_size, floor_thickness, grid.cell_size))
 	_floors[cell] = piece
 	pieces_changed.emit()
@@ -288,6 +319,15 @@ func _place_floor(cell: Vector2i) -> bool:
 
 
 func _place_wall(key: Vector3i) -> bool:
+	if not _place_wall_silent(key):
+		return false
+	_refresh_wall_variants()
+	_refresh_wall_shapes()
+	pieces_changed.emit()
+	return true
+
+
+func _place_wall_silent(key: Vector3i) -> bool:
 	if not _can_place_wall(key):
 		return false
 
@@ -302,23 +342,115 @@ func _place_wall(key: Vector3i) -> bool:
 		Basis(Vector3.UP, grid.wall_yaw(key)),
 		grid.wall_center(key) + Vector3.UP * (wall_height * 0.5)
 	)
-	# Modelos importados (.glb/.blend/.map): ajustar altura a su AABB, no a
-	# wall_height, para que la base quede sobre el plano.
 	var mesh_instance := piece.get_node_or_null("MeshInstance3D") as MeshInstance3D
 	if mesh_instance == null:
 		var col := piece.get_node_or_null("CollisionShape3D") as CollisionShape3D
-		# Los modelos importados tienen el pivote en la base (tocan el piso),
-		# asi que la pieza se coloca directamente sobre el plano.
 		piece.global_position = grid.wall_center(key)
 	piece.set_dimensions(Vector3(grid.cell_size, wall_height, wall_thickness))
 	_walls[key] = piece
-	pieces_changed.emit()
 	return true
+
+
+# --------------------------------------------------------------------------
+# Arrastre de paredes (estilo Sims): clic y arrastrar para crear varios tramos.
+# --------------------------------------------------------------------------
+
+func _start_wall_drag() -> void:
+	if not _hovering:
+		return
+	_wall_dragging = true
+	_wall_drag_start = _hover_wall
+	_wall_drag_start_cell = _hover_cell
+
+
+func _update_wall_drag() -> void:
+	if not _hovering:
+		return
+	_rebuild_wall_drag_ghosts()
+
+
+func _wall_drag_segment_keys() -> Array[Vector3i]:
+	var keys: Array[Vector3i] = []
+	if not _wall_dragging:
+		return keys
+
+	# El eje queda fijado por la pared sobre la que se hizo el primer clic.
+	# Vector3i(x, z, axis): .z es el eje (0 vertical, 1 horizontal).
+	var axis := _wall_drag_start.z
+
+	if axis == 1:
+		# Pared horizontal: z fijo (frontera), x varia por celdas.
+		var fixed_z := _wall_drag_start.y
+		var x_min := mini(_wall_drag_start.x, _hover_cell.x)
+		var x_max := maxi(_wall_drag_start.x, _hover_cell.x)
+		for x in range(x_min, x_max + 1):
+			var key := Vector3i(x, fixed_z, 1)
+			if grid.is_wall_inside(key):
+				keys.append(key)
+	else:
+		# Pared vertical: x fijo (frontera), z varia por celdas.
+		var fixed_x := _wall_drag_start.x
+		var z_min := mini(_wall_drag_start.y, _hover_cell.y)
+		var z_max := maxi(_wall_drag_start.y, _hover_cell.y)
+		for z in range(z_min, z_max + 1):
+			var key := Vector3i(fixed_x, z, 0)
+			if grid.is_wall_inside(key):
+				keys.append(key)
+
+	return keys
+
+
+func _rebuild_wall_drag_ghosts() -> void:
+	_clear_wall_drag_ghosts()
+	for key in _wall_drag_segment_keys():
+		var ghost := MeshInstance3D.new()
+		ghost.name = "WallDragGhost"
+		var box := BoxMesh.new()
+		box.size = Vector3(grid.cell_size * 0.98, wall_height, wall_thickness * 0.7)
+		ghost.mesh = box
+		ghost.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		var mat := StandardMaterial3D.new()
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		if _can_place_wall(key):
+			mat.albedo_color = COLOR_OK
+		else:
+			mat.albedo_color = COLOR_BAD
+		ghost.material_override = mat
+		ghost.global_transform = Transform3D(
+			Basis(Vector3.UP, grid.wall_yaw(key)),
+			grid.wall_center(key) + Vector3.UP * (wall_height * 0.5)
+		)
+		add_child(ghost)
+		_wall_drag_ghosts.append(ghost)
+
+
+func _clear_wall_drag_ghosts() -> void:
+	for ghost in _wall_drag_ghosts:
+		if is_instance_valid(ghost):
+			ghost.queue_free()
+	_wall_drag_ghosts.clear()
+
+
+func _finish_wall_drag() -> void:
+	var placed := false
+	for key in _wall_drag_segment_keys():
+		if _place_wall_silent(key):
+			placed = true
+	if placed:
+		_refresh_wall_variants()
+		_refresh_wall_shapes()
+		pieces_changed.emit()
+	_clear_wall_drag_ghosts()
+	_wall_dragging = false
 
 
 func _erase_at(cell: Vector2i, wall: Vector3i) -> bool:
 	if _walls.has(wall):
 		_remove(_walls, wall)
+		_refresh_wall_variants()
+		_refresh_wall_shapes()
 		pieces_changed.emit()
 		return true
 	if _floors.has(cell):
@@ -392,6 +524,169 @@ func _find_build_menu(node: Node) -> BuildMenu:
 		if found != null:
 			return found
 	return null
+
+# --------------------------------------------------------------------------
+# Recorte dinamico de paredes: evita solapamientos en esquinas.
+# --------------------------------------------------------------------------
+
+func _has_perp_neighbor(key: Vector3i, end: int) -> bool:
+	var axis := key.z
+	if axis == 1:
+		# Pared horizontal: extremos en x y x+1, frontera z = key.y
+		var bx := key.x if end == 0 else key.x + 1
+		var bz_boundary := key.y
+		for k in [bz_boundary - 1, bz_boundary]:
+			if k < 0 or k >= grid.cells_z:
+				continue
+			if _walls.has(Vector3i(bx, k, 0)):
+				return true
+	else:
+		# Pared vertical: extremos en z y z+1, frontera x = key.x
+		var bz := key.y if end == 0 else key.y + 1
+		var bx_boundary := key.x
+		for k in [bx_boundary - 1, bx_boundary]:
+			if k < 0 or k >= grid.cells_x:
+				continue
+			if _walls.has(Vector3i(k, bz, 1)):
+				return true
+	return false
+
+
+func _refresh_wall_shapes() -> void:
+	if grid == null:
+		return
+	var trim := wall_thickness * 0.5
+	for key in _walls.keys():
+		var piece: BuildPiece = _walls[key]
+		if not is_instance_valid(piece):
+			continue
+		# Las esquinas usan modelo importado: no recortar ni reemplazar su mesh.
+		if _corner_model_path(key) != "":
+			continue
+		var has_left := _has_perp_neighbor(key, 0)
+		var has_right := _has_perp_neighbor(key, 1)
+		var length := grid.cell_size
+		var offset := 0.0
+		if has_left:
+			length -= trim
+			offset += trim * 0.5
+		if has_right:
+			length -= trim
+			offset -= trim * 0.5
+		if length < 0.05:
+			length = 0.05
+		piece.set_dimensions(Vector3(length, wall_height, wall_thickness))
+		var center := grid.wall_center(key)
+		var yaw := grid.wall_yaw(key)
+		var piece_mi := piece.get_node_or_null("MeshInstance3D") as MeshInstance3D
+		var y_offset := wall_height * 0.5 if piece_mi != null else 0.0
+		if key.z == 1:
+			piece.global_position = center + Vector3(offset, y_offset, 0.0)
+		else:
+			piece.global_position = center + Vector3(0.0, y_offset, offset)
+		piece.global_rotation = Vector3(0.0, yaw, 0.0)
+
+
+func _corner_model_path(key: Vector3i) -> String:
+	if _has_perp_neighbor(key, 1):
+		return "res://models/build/construccion/wall_basic_IZQ.blend"
+	if _has_perp_neighbor(key, 0):
+		return "res://models/build/construccion/wall_basic_DER.blend"
+	return ""
+
+
+func _spawn_wall_piece(key: Vector3i) -> BuildPiece:
+	var model_path := _corner_model_path(key)
+	var piece: BuildPiece
+	var used_corner_model := false
+
+	if model_path != "":
+		var corner_scene := _load_corner_scene(model_path)
+		if corner_scene != null:
+			# Usar el modelo de esquina directamente (envolviendolo como pieza)
+			# para que la malla importada se conserve en todos los casos.
+			piece = _spawn_piece(corner_scene)
+			used_corner_model = piece != null
+
+	if not used_corner_model:
+		piece = _spawn_piece(wall_scene)
+
+	piece.is_wall = true
+	piece.wall_key = key
+	piece.name = "Wall_%d_%d_%d" % [key.x, key.y, key.z]
+
+	if used_corner_model:
+		# El modelo importado tiene el pivote en la base: alinear su AABB al origen
+		# de la pieza para que la colision coincida con la geometria.
+		for child in piece.get_children():
+			if child is Node3D and not (child is CollisionShape3D):
+				var aabb := _compute_aabb(child)
+				if aabb.size != Vector3.ZERO:
+					child.position = -aabb.position
+		piece.global_position = grid.wall_center(key)
+		if key.z == 0:
+			piece.global_rotation = Vector3(0.0, PI * 0.5, 0.0)
+		else:
+			piece.global_rotation = Vector3.ZERO
+	else:
+		piece.set_dimensions(Vector3(grid.cell_size, wall_height, wall_thickness))
+		var piece_mi := piece.get_node_or_null("MeshInstance3D") as MeshInstance3D
+		if piece_mi != null:
+			piece.global_position = grid.wall_center(key) + Vector3.UP * (wall_height * 0.5)
+		else:
+			piece.global_position = grid.wall_center(key)
+		piece.global_rotation = Vector3(0.0, grid.wall_yaw(key), 0.0)
+
+	_walls[key] = piece
+	return piece
+
+
+func _load_corner_scene(path: String) -> PackedScene:
+	if _corner_scene_cache.has(path):
+		return _corner_scene_cache[path] as PackedScene
+	var res := load(path)
+	if res is PackedScene:
+		_corner_scene_cache[path] = res
+		return res as PackedScene
+	_corner_scene_cache[path] = null
+	return null
+
+
+func _find_mesh_instance(node: Node) -> MeshInstance3D:
+	if node is MeshInstance3D:
+		return node as MeshInstance3D
+	for child in node.get_children():
+		var found := _find_mesh_instance(child)
+		if found != null:
+			return found
+	return null
+
+
+func _refresh_wall_variants() -> void:
+	if grid == null:
+		return
+	var keys = _walls.keys().duplicate()
+	for key in keys:
+		var old_piece = _walls[key]
+		if is_instance_valid(old_piece):
+			old_piece.queue_free()
+		_spawn_wall_piece(key)
+
+		# Evitar solapamiento visual: los muros horizontales cubiertos por una
+		# esquina (L) se ocultan, pero conservan su colision para la navegacion.
+		for wall_key in _walls.keys():
+			var piece = _walls[wall_key]
+			if is_instance_valid(piece):
+				piece.visible = true
+		for corner_key in _wall_corner_path.keys():
+			for bz in [corner_key.y, corner_key.y + 1]:
+				for hx in [corner_key.x - 1, corner_key.x]:
+					var hk = Vector3i(hx, bz, 1)
+					if _walls.has(hk):
+						var piece = _walls[hk]
+						if is_instance_valid(piece):
+							piece.visible = false
+
 
 func _spawn_current_piece() -> BuildPiece:
 	if _active_map_file != "":
@@ -536,6 +831,10 @@ func _update_ghosts() -> void:
 	_hide_ghosts()
 	if not _hovering:
 		return
+	if tool == Tool.WALL and _wall_dragging:
+		if _wall_ghost != null:
+			_wall_ghost.visible = false
+		return
 
 	match tool:
 		Tool.FLOOR:
@@ -599,6 +898,8 @@ func _resolve_references() -> void:
 
 	if grid == null:
 		grid = _find_grid(scene_root)
+	if grid != null:
+		wall_thickness = grid.wall_thickness
 	if build_camera == null:
 		build_camera = _find_build_camera(scene_root)
 	if build_camera == null:

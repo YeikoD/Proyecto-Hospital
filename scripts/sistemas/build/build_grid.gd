@@ -15,6 +15,11 @@ extends Node3D
 
 const GRID_SHADER := preload("res://scripts/sistemas/build/shaders/grid.gdshader")
 
+@export var wall_thickness := 0.2:
+	set(value):
+		wall_thickness = maxf(value, 0.01)
+		_refresh_overlay()
+
 @export var cell_size := 1.0:
 	set(value):
 		cell_size = maxf(value, 0.05)
@@ -130,16 +135,20 @@ func clamp_wall(key: Vector3i) -> Vector3i:
 
 
 ## Punto medio del borde, sobre el plano de construccion.
+## El grosor se desfasa medio espesor hacia el interior de la celda para que
+## las caras exteriores de las paredes que se cruzan en una esquina queden
+## alineadas (estilo Sims).
 func wall_center(key: Vector3i) -> Vector3:
 	var base := global_position
+	var half_thick := wall_thickness * 0.5
 	var x := base.x
 	var z := base.z
 	if key.z == 0:
-		x += key.x * cell_size
+		x += key.x * cell_size + half_thick
 		z += (key.y + 0.5) * cell_size
 	else:
 		x += (key.x + 0.5) * cell_size
-		z += key.y * cell_size
+		z += key.y * cell_size + half_thick
 	return Vector3(x, plane_global_y(), z)
 
 

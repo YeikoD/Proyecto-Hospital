@@ -12,6 +12,6 @@ subcategory = "walls"
 object_type = "wall"
 preview = ExtResource("2_preview")
 scene = ExtResource("2_eqq0a")
-footprint = Vector2i(1, 0)
+footprint = Vector2i(0, 0)
 can_rotate = true
 notes = "Pared estándar de 1 celda."
