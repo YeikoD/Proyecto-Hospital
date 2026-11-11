@@ -38,6 +38,7 @@ static func get_objects() -> Array:
 
 ## Devuelve los objetos que ofrecen `affordance_id` y tienen un slot libre,
 ## ordenados por utilidad (peso base / distancia).
+## `max_distance <= 0` significa sin limite de distancia.
 static func find_candidates(
 	affordance_id: StringName,
 	from: Vector3,
@@ -55,7 +56,7 @@ static func find_candidates(
 		if obj.find_free_slot(affordance_id, agent_id) < 0:
 			continue
 		var distance: float = obj.global_position.distance_to(from)
-		if distance > max_distance:
+		if max_distance > 0.0 and distance > max_distance:
 			continue
 		result.append({
 			"object": obj,

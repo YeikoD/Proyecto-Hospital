@@ -39,6 +39,14 @@ signal navigation_baked
 @export var limit_bake_bounds := true
 @export var bounds_padding := 1.0
 
+@export_group("Mapa")
+## Hornea tambien la geometria del mapa (suelo, terreno, rampas) marcada con
+## `geometry_group`. Asi el NavMesh cubre todo el mapa y los NPC pueden caminar
+## fuera de la grilla construida.
+@export var include_scene_geometry := false
+## Grupo cuyos nodos (y sus hijos) se usan como geometria caminable extra.
+@export var geometry_group: StringName = &"navigation_static"
+
 ## Cantidad de horneados completados (util para tests y diagnostico).
 var bake_count := 0
 
@@ -72,7 +80,7 @@ func _ready() -> void:
 		build_controller.pieces_changed.connect(_on_pieces_changed)
 
 	if bake_on_ready and build_controller != null \
-			and build_controller.get_floor_count() > 0:
+			and (build_controller.get_floor_count() > 0 or include_scene_geometry):
 		call_deferred("request_bake")
 
 
@@ -101,13 +109,16 @@ func bake_now() -> void:
 		_dirty = true
 		return
 
-	# Sin suelos no hay superficie caminable: limpiamos el NavMesh.
-	if build_controller != null and build_controller.get_floor_count() == 0:
+	# Sin suelos no hay superficie caminable: limpiamos el NavMesh. Si ademas
+	# horneamos la geometria del mapa, el mapa sigue siendo caminable.
+	if not include_scene_geometry and build_controller != null \
+			and build_controller.get_floor_count() == 0:
 		_dirty = false
 		_clear_navigation()
 		return
 
 	_prepare_navmesh()
+	_sync_source_group()
 	_apply_settings(navigation_region.navigation_mesh)
 	_update_bake_bounds()
 
@@ -150,7 +161,15 @@ func _apply_settings(mesh: NavigationMesh) -> void:
 	# Los BuildPiece son StaticBody3D con BoxShape3D: parsear colliders es mas
 	# rapido que sincronizar mallas desde el hilo de horneado.
 	mesh.geometry_parsed_geometry_type = NavigationMesh.PARSED_GEOMETRY_STATIC_COLLIDERS
-	mesh.geometry_source_geometry_mode = NavigationMesh.SOURCE_GEOMETRY_ROOT_NODE_CHILDREN
+	if include_scene_geometry:
+		# Las piezas de la grilla y la geometria del mapa (suelo/terreno) viven
+		# en nodos distintos: las unimos por grupo para que el hornado vea todo.
+		mesh.geometry_source_geometry_mode = \
+			NavigationMesh.SOURCE_GEOMETRY_GROUPS_WITH_CHILDREN
+		mesh.geometry_source_group_name = String(geometry_group)
+	else:
+		mesh.geometry_source_geometry_mode = \
+			NavigationMesh.SOURCE_GEOMETRY_ROOT_NODE_CHILDREN
 	mesh.geometry_collision_mask = 1
 
 	mesh.filter_low_hanging_obstacles = true
@@ -186,6 +205,18 @@ func _sync_map_cell_size() -> void:
 		NavigationServer3D.map_set_cell_height(map, cell_height)
 
 
+## Con `include_scene_geometry`, el modo de horneado pasa a ser por grupo: hay
+## que meter las piezas de la grilla en el mismo grupo que el mapa.
+func _sync_source_group() -> void:
+	if not include_scene_geometry or build_controller == null:
+		return
+	var pieces := build_controller.pieces_root
+	if pieces == null:
+		return
+	if not pieces.is_in_group(String(geometry_group)):
+		pieces.add_to_group(String(geometry_group))
+
+
 func _update_bake_bounds() -> void:
 	var mesh := navigation_region.navigation_mesh
 	if mesh == null:
@@ -199,8 +230,27 @@ func _update_bake_bounds() -> void:
 	# El AABB se expresa en espacio local del NavigationRegion3D.
 	var base := navigation_region.to_local(grid.global_position)
 	var plane_y := base.y + grid.plane_y
-	var size_x := grid.cells_x * grid.cell_size + bounds_padding * 2.0
-	var size_z := grid.cells_z * grid.cell_size + bounds_padding * 2.0
+	var min_x := base.x - bounds_padding
+	var max_x := base.x + grid.cells_x * grid.cell_size + bounds_padding
+	var min_z := base.z - bounds_padding
+	var max_z := base.z + grid.cells_z * grid.cell_size + bounds_padding
+
+	# Mapa: agrandar el volumen (solo en horizontal) hasta cubrir el suelo y el
+	# terreno. La altura se mantiene, asi las paredes no generan techo caminable.
+	if include_scene_geometry and is_inside_tree():
+		var pieces_root: Node = build_controller.pieces_root
+		for node in get_tree().get_nodes_in_group(String(geometry_group)):
+			if node == pieces_root:
+				continue
+			var box := _geometry_aabb(node)
+			if box.size == Vector3.ZERO:
+				continue
+			var local_a := navigation_region.to_local(box.position)
+			var local_b := navigation_region.to_local(box.end)
+			min_x = minf(min_x, minf(local_a.x, local_b.x))
+			max_x = maxf(max_x, maxf(local_a.x, local_b.x))
+			min_z = minf(min_z, minf(local_a.z, local_b.z))
+			max_z = maxf(max_z, maxf(local_a.z, local_b.z))
 
 	# Techo por debajo de la altura de las paredes: asi sus caras superiores
 	# quedan fuera del volumen y no se generan poligonos caminables arriba.
@@ -211,14 +261,27 @@ func _update_bake_bounds() -> void:
 	var height := 0.5 + top_margin
 
 	mesh.filter_baking_aabb = AABB(
-		Vector3(
-			base.x - bounds_padding,
-			plane_y - 0.5,
-			base.z - bounds_padding
-		),
-		Vector3(size_x, height, size_z)
+		Vector3(min_x, plane_y - 0.5, min_z),
+		Vector3(max_x - min_x, height, max_z - min_z)
 	)
 	mesh.filter_baking_aabb_offset = Vector3.ZERO
+
+
+## AABB en espacio global de la geometria visual de un nodo y sus hijos.
+func _geometry_aabb(node: Node) -> AABB:
+	var box := AABB()
+	var found := false
+	var stack: Array[Node] = [node]
+	while not stack.is_empty():
+		var current: Node = stack.pop_back()
+		if current is VisualInstance3D:
+			var visual := current as VisualInstance3D
+			var b := visual.global_transform * visual.get_aabb()
+			box = b if not found else box.merge(b)
+			found = true
+		for child in current.get_children():
+			stack.append(child)
+	return box if found else AABB()
 
 
 # --------------------------------------------------------------------------

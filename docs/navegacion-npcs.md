@@ -160,6 +160,32 @@ func is_baking() -> bool
 func get_polygon_count() -> int
 ```
 
+### 3.6 NavMesh sobre todo el mapa (opcional)
+
+Por defecto el horneado usa sólo las piezas de la grilla. Para que los NPC
+también caminen fuera del hospital (terreno, veredas, patios) hay que sumar la
+geometría del mapa:
+
+```gdscript
+# En el inspector de BuildNavigation
+include_scene_geometry = true
+geometry_group = &"navigation_static"
+```
+
+1. Los nodos del mapa (`Ground`, `terrain_01`, rampas...) se marcan con el grupo
+   `navigation_static` (pestaña **Grupos** del inspector o `groups=[...]` en la
+   escena).
+2. `BuildNavigation` agrega automáticamente `PlacedPieces` al mismo grupo, así
+   el horneado ve la grilla **y** el mapa.
+3. El modo de geometría fuente pasa a
+   `SOURCE_GEOMETRY_GROUPS_WITH_CHILDREN` con ese nombre de grupo.
+4. El volumen de horneado se agranda en horizontal hasta cubrir el mapa, pero
+   conserva el techo bajo que evita caminar sobre las paredes.
+
+El resultado: un único NavMesh continuo desde el terreno hasta los suelos del
+hospital. Si el jugador borra todos los suelos, el mapa sigue siendo navegable
+(el NavMesh no se limpia).
+
 ---
 
 ## 4. NPC
@@ -230,11 +256,14 @@ Si todavía no hay NavMesh (por ejemplo, al arrancar la escena), reintenta cada
 ### 4.4 API pública
 
 ```gdscript
-func move_to(world_position: Vector3) -> void
+func move_to(world_position: Vector3, arrive_distance := 0.0) -> void
 func stop() -> void
 func is_moving() -> bool
 func get_target() -> Vector3
 ```
+
+`arrive_distance` permite pedir una llegada más fina (el cerebro usa `0.25 m`
+para los muebles). Un valor `<= 0` usa la distancia por defecto (`0.4 m`).
 
 Ejemplo:
 
@@ -254,7 +283,32 @@ puede pasar una posición aproximada.
 inaccesible, `NavigationAgent3D` lo acerca al punto alcanzable y el NPC elige
 otro destino al terminar.
 
-### 4.6 Animación
+### 4.6 Entrada desde fuera de la grilla
+
+Cuando el NavMesh cubre todo el mapa, un NPC puede aparecer en el terreno y
+tener que usar un mueble que está dentro del hospital. En vez de cortar camino
+campo a través, `NpcBrain` entra por la celda construida más cercana:
+
+```
+NPC fuera de la grilla
+   │
+   ├─ ¿el mueble está sobre la grilla?  ── no ──> ir directo al mueble
+   │
+   └─ sí: buscar la celda con suelo más cercana
+            │  (ordenadas por distancia; se prueban las 24 primeras)
+            ├─ descartar celdas fuera del NavMesh
+            ├─ verificar camino con map_get_path()
+            └─ caminar a la entrada  ──llegó──> caminar al mueble
+```
+
+- La consulta de grilla es `BuildController.get_active()`, un registro estático
+  (sin autoload) con `has_floor_at_world()` y `get_floor_points()`.
+- Si no hay ninguna celda alcanzable, el NPC va directo al mueble y el cerebro
+  sigue funcionando como antes.
+- Al llegar a la entrada se reinicia `travel_timeout`, así el tramo largo por el
+  terreno no consume el tiempo del segundo tramo.
+
+### 4.7 Animación
 
 `NpcAgent` llama a `AnimationController.set_speed()` cada frame con la velocidad
 horizontal. El controlador decide el punto del *blend* de locomoción
@@ -312,6 +366,23 @@ Resultado esperado:
 NAV_SMOKE_TEST_OK
 ```
 
+### 6.1 Prueba del mapa completo
+
+```powershell
+Godot.exe --headless --path . --script res://tests/nav_map_smoke_test.gd
+```
+
+Carga `scenes/build_demo.tscn` con su construcción guardada y verifica que el
+NavMesh llega fuera de la grilla, que existe camino desde el terreno hasta una
+silla y que la IA puede consultar la grilla activa para entrar por la celda más
+cercana.
+
+Resultado esperado:
+
+```
+NAV_MAP_SMOKE_TEST_OK
+```
+
 ---
 
 ## 7. Rendimiento y límites
@@ -331,6 +402,9 @@ NAV_SMOKE_TEST_OK
 - **Una sola planta plana.** No hay escaleras, rampas ni ascensores.
 - **Sin puertas dinámicas.** Una puerta es un hueco entre paredes; no hay
   prefab de puerta que se abra/cierre.
+- **Costo del mapa completo.** `include_scene_geometry` hornea toda la
+  geometría del grupo; en mapas grandes conviene subir `cell_size` (0.15–0.2)
+  o marcar sólo el suelo/terreno necesario, no todos los props.
 - **Sin evitación entre NPCs.** `avoidance_enabled` está desactivado; los NPC se
   atraviesan entre sí (colisionan con el escenario).
 - **Paredes de altura variable.** El límite vertical asume que las paredes son

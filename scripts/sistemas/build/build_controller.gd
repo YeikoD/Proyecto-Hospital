@@ -60,6 +60,10 @@ var _walls: Dictionary = {}
 var _objects: Dictionary = {}
 var _object_cells: Dictionary = {}
 
+## Controllers vivos. La IA consulta la grilla activa sin autoload (igual que
+## `SmartObjectRegistry`), asi funciona tambien en tests headless.
+static var _active_controllers: Array = []
+
 var build_items: Array[BuildItem] = []
 var selected_item: BuildItem
 var _selected_object_item: BuildItem
@@ -110,6 +114,8 @@ var _ui_message: Label
 func _ready() -> void:
 	BuildInput.ensure_actions()
 	_resolve_references()
+	if not _active_controllers.has(self):
+		_active_controllers.append(self)
 	_load_build_items()
 	_wire_build_menu()
 	_create_ghosts()
@@ -125,6 +131,18 @@ func _ready() -> void:
 
 	if start_in_build_mode:
 		enter_build_mode()
+
+
+func _exit_tree() -> void:
+	_active_controllers.erase(self)
+
+
+## Primer controller valido de la escena (o null). Pensado para la IA.
+static func get_active() -> BuildController:
+	for candidate in _active_controllers:
+		if is_instance_valid(candidate) and not candidate.is_queued_for_deletion():
+			return candidate as BuildController
+	return null
 
 
 # --------------------------------------------------------------------------
@@ -340,6 +358,24 @@ func get_objects() -> Array[BuildPiece]:
 		if is_instance_valid(piece):
 			out.append(piece as BuildPiece)
 	return out
+
+
+## Punto central de cada celda con suelo. La IA lo usa para entrar a la grilla
+## desde fuera (por ejemplo, viniendo del terreno).
+func get_floor_points() -> PackedVector3Array:
+	var points := PackedVector3Array()
+	if grid == null:
+		return points
+	for cell in _floors.keys():
+		points.append(grid.cell_center(cell))
+	return points
+
+
+## Hay un suelo construido en la celda que contiene `world`.
+func has_floor_at_world(world: Vector3) -> bool:
+	if grid == null:
+		return false
+	return _floors.has(grid.cell_from_world(world))
 
 
 ## Rota el objeto seleccionado 90 grados (para la herramienta OBJECT).

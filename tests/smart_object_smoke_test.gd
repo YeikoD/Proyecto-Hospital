@@ -125,6 +125,7 @@ func _run() -> void:
 		await process_frame
 	_check(_interaction_started, "el NPC llega y empieza a usar la silla")
 	_check(not obj.has_free_slot(&"sit"), "el slot queda ocupado durante el uso")
+	var body_at_use := npc.global_position
 
 	# La animación de entrada lleva al loop sentado.
 	var loop_deadline := Time.get_ticks_msec() + 8000
@@ -133,6 +134,8 @@ func _run() -> void:
 		await process_frame
 	_check(anim_manager != null and anim_manager.get_phase() == &"loop",
 		"la silla encadena enter -> loop")
+	_check(npc.global_position.distance_to(body_at_use) < 0.02,
+		"el cuerpo del NPC no se teletransporta al sentarse")
 
 	if anim_manager != null:
 		var skeleton := anim_manager.get_skeleton()
@@ -152,7 +155,7 @@ func _run() -> void:
 	_check(_interaction_finished, "el NPC termina la interacción")
 	_check(obj.has_free_slot(&"sit"), "el NPC libera el slot al terminar")
 	_check(float(brain.needs["rest"]) < 1.0, "la interacción reduce la necesidad")
-	_check(npc.global_position.distance_to(approach.origin) < 0.1,
+	_check(npc.global_position.distance_to(approach.origin) < 0.3,
 		"el NPC termina en el punto de salida")
 
 	# --- Borrado ----------------------------------------------------------

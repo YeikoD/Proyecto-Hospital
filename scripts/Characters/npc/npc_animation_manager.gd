@@ -11,8 +11,9 @@ extends Node
 ##      nodos `Scene/Armature/...` y el NPC usa huesos `Armature/Skeleton3D:...`).
 ##   3. Los reproduce en un `AnimationPlayer` propio, agregado al final del
 ##      modelo, para que pise al AnimationTree de locomotion.
-##   4. Alinea al NPC al POI recibido y desactiva su colisión mientras la
-##      secuencia está activa.
+##   4. Alinea el modelo al POI recibido moviéndolo suavemente desde la
+##      posición donde el NPC llegó (el cuerpo no se teletransporta) y
+##      desactiva su colisión mientras la secuencia está activa.
 ##
 ## La secuencia avanza sola: enter -> loop -> (request_exit) -> exit -> finished.
 ## El dueño (por ejemplo `NpcBrain`) sólo decide cuándo pedir la salida.
@@ -34,9 +35,15 @@ const PHASE_EXIT := &"exit"
 @export var visual_path: NodePath
 ## Nombre del AnimationPlayer propio que crea el manager.
 @export var player_name := &"SmartInteractionPlayer"
-## Duración del desplazamiento suave al volver al punto de salida tras la
-## animación de exit (evita el "teletransporte" al levantarse).
-@export var exit_return_duration := 0.25
+## Duración del desplazamiento suave del modelo hasta el POI al empezar.
+@export var align_duration := 0.4
+## Duración del desplazamiento suave del modelo de vuelta al punto de salida
+## tras la animación de exit (evita el "teletransporte" al levantarse).
+@export var exit_return_duration := 0.35
+## Si el NPC está a más de esta distancia del POI, se teletransporta el cuerpo
+## (compatibilidad). Lo normal es llegar caminando y resolver el resto con un
+## desplazamiento suave del modelo.
+@export var max_soft_align_distance := 1.5
 
 var _npc: NpcAgent
 var _visual: Node3D
@@ -50,9 +57,14 @@ var _phase := StringName()
 var _active := false
 var _finishing := false
 var _has_poi := false
+var _soft_align := false
 var _poi := Transform3D.IDENTITY
 var _exit_transform := Transform3D.IDENTITY
-var _restore_tween: Tween
+var _align_tween: Tween
+var _returning_visual := false
+## Posición local original del nodo Visual (el POI se aplica como offset).
+var _visual_base_position := Vector3.ZERO
+var _visual_base_captured := false
 
 ## path del archivo -> { "clips": {nombre: Animation}, "rests": {nodo: Transform3D} }
 var _sources: Dictionary = {}
@@ -81,14 +93,21 @@ func play(set: SmartAnimationSet) -> bool:
 	return _play(set, false, Transform3D.IDENTITY, Transform3D.IDENTITY)
 
 
-## Reproduce la secuencia alineando al NPC al `poi` y devolviéndolo al
-## `exit_transform` cuando termina. El dueño debe congelar al NPC antes.
+## Reproduce la secuencia alineando el modelo del NPC al `poi` y
+## devolviéndolo al `exit_transform` cuando termina.
+##
+## Con `soft_align` (por defecto) el cuerpo se queda donde llegó y el modelo
+## se desplaza suavemente hasta el POI: así el NPC camina hasta el mueble y
+## recién ahí empieza a sentarse, sin teletransportes. Si la distancia al POI
+## supera `max_soft_align_distance`, o `soft_align` es false, se coloca el
+## cuerpo directamente en el POI (comportamiento anterior).
 func play_at(
 	set: SmartAnimationSet,
 	poi: Transform3D,
-	exit_transform: Transform3D
+	exit_transform: Transform3D,
+	soft_align := true
 ) -> bool:
-	return _play(set, true, poi, exit_transform)
+	return _play(set, true, poi, exit_transform, soft_align)
 
 
 ## Pide pasar a la fase de salida. Si no hay clip de salida termina enseguida.
@@ -115,15 +134,16 @@ func cancel() -> void:
 		canceled.emit()
 
 
-## Detiene el tween de retorno. Si `emit_canceled` es true y había una
-## interacción activa (no solo el retorno), se notifica cancelación.
+## Detiene el tween de alineación/retorno. Si `emit_canceled` es true y había
+## una interacción activa (no solo el retorno), se notifica cancelación.
 func _stop_restore(emit_canceled: bool) -> void:
-	if _restore_tween != null and _restore_tween.is_valid():
-		_restore_tween.kill()
-	_restore_tween = null
+	_kill_align_tween()
+	_returning_visual = false
 	var had_active := _active
 	_finishing = false
 	_active = false
+	if _soft_align and _visual != null and _visual_base_captured:
+		_visual.position = _visual_base_position
 	if emit_canceled and had_active:
 		_stop_player()
 		_reset_skeleton()
@@ -166,27 +186,33 @@ func _play(
 	set: SmartAnimationSet,
 	use_poi: bool,
 	poi: Transform3D,
-	exit_transform: Transform3D
+	exit_transform: Transform3D,
+	soft_align := true
 ) -> bool:
 	if set == null or not set.has_any():
 		return false
 
 	_resolve_nodes()
-	if _skeleton == null or not _ensure_player():
+	if _npc == null or _skeleton == null or not _ensure_player():
 		return false
 
-	if _active or _finishing:
+	if _active or _finishing or _returning_visual:
 		_stop_restore(true)
 
 	_set = set
 	_has_poi = use_poi
+	_soft_align = use_poi and soft_align \
+		and poi.origin.distance_to(_npc.global_position) <= max_soft_align_distance
 	_poi = poi
 	_exit_transform = exit_transform
 	_active = true
 	_phase = StringName()
 
 	if use_poi:
-		_align_to_poi(poi)
+		if _soft_align:
+			_begin_alignment(poi)
+		else:
+			_align_to_poi(poi)
 
 	if not _start_phase(PHASE_ENTER) and not _start_phase(PHASE_LOOP):
 		if not _start_phase(PHASE_EXIT):
@@ -194,6 +220,7 @@ func _play(
 			# `finished` (el dueño todavía está dentro de su propio callback).
 			_active = false
 			_phase = StringName()
+			_kill_align_tween()
 			_stop_player()
 			_reset_skeleton()
 			_restore_pose()
@@ -232,6 +259,10 @@ func _start_phase(phase: StringName) -> bool:
 	_phase = phase
 	var fade := _set.enter_fade if phase == PHASE_ENTER else _set.xfade
 	_player.play(anim_name, fade)
+	if phase == PHASE_EXIT:
+		# El modelo vuelve al punto de salida mientras la animación de
+		# levantarse hace su trabajo: se ve como un paso atrás, sin saltos.
+		_begin_visual_return(exit_return_duration)
 	phase_started.emit(phase)
 	if phase == PHASE_LOOP:
 		loop_started.emit()
@@ -262,32 +293,56 @@ func _complete() -> void:
 	_phase = StringName()
 	_stop_player()
 	_reset_skeleton()
-	if _has_poi and _npc != null and is_instance_valid(_npc) \
-			and exit_return_duration > 0.0 \
-			and _npc.global_position.distance_to(_exit_transform.origin) > 0.01:
-		_smooth_restore()
+	if _soft_align and _visual != null and _visual_base_captured \
+			and _visual.position.distance_to(_visual_base_position) > 0.005:
+		_finishing = true
+		_begin_visual_return(exit_return_duration)
+		if not _returning_visual:
+			_finishing = false
+			_restore_pose()
+			finished.emit()
 		return
 	_restore_pose()
 	finished.emit()
 
 
-func _smooth_restore() -> void:
-	_finishing = true
-	var target_pos := _exit_transform.origin
-	_restore_tween = create_tween()
-	_restore_tween.set_ease(Tween.EASE_OUT)
-	_restore_tween.set_trans(Tween.TRANS_CUBIC)
-	_restore_tween.tween_property(
-		_npc, "global_position", target_pos, exit_return_duration
+## Devuelve el modelo a su posición local original. Si ya está ahí no hace
+## nada; si `duration` es 0 lo coloca directamente.
+func _begin_visual_return(duration: float) -> void:
+	if _visual == null or not _soft_align or not _visual_base_captured:
+		return
+	if _returning_visual:
+		return
+	if _visual.position.distance_to(_visual_base_position) < 0.005:
+		return
+	_kill_align_tween()
+	if duration <= 0.0:
+		_visual.position = _visual_base_position
+		return
+	_returning_visual = true
+	_align_tween = create_tween()
+	_align_tween.set_ease(Tween.EASE_IN_OUT)
+	_align_tween.set_trans(Tween.TRANS_CUBIC)
+	_align_tween.tween_property(
+		_visual, "position", _visual_base_position, duration
 	)
-	_restore_tween.finished.connect(_on_restore_finished, CONNECT_ONE_SHOT)
+	_align_tween.finished.connect(_on_visual_return_finished, CONNECT_ONE_SHOT)
 
 
-func _on_restore_finished() -> void:
+func _on_visual_return_finished() -> void:
+	_returning_visual = false
+	_align_tween = null
+	if not _finishing:
+		return
 	_finishing = false
-	_restore_tween = null
 	_restore_pose()
 	finished.emit()
+
+
+func _kill_align_tween() -> void:
+	if _align_tween != null and _align_tween.is_valid():
+		_align_tween.kill()
+	_align_tween = null
 
 
 func _stop_player() -> void:
@@ -307,18 +362,71 @@ func _reset_skeleton() -> void:
 # Alineación / POI
 # --------------------------------------------------------------------------
 
+## Alineación directa (cuerpo al POI). Se usa cuando el NPC ya está en el POI
+## o cuando la distancia es demasiado grande para un desplazamiento suave.
 func _align_to_poi(poi: Transform3D) -> void:
 	if _npc == null:
 		return
+	if _visual != null and _visual_base_captured:
+		_visual.position = _visual_base_position
 	_npc.set_frozen(true)
 	_npc.set_collision_enabled(false)
 	_npc.teleport_to(poi)
 
 
+## Alineación suave: el cuerpo se queda en el punto de llegada y sólo el modelo
+## se desplaza hasta el POI. Así el NPC empieza la animación recién cuando ya
+## caminó hasta el mueble, sin teletransportarse.
+func _begin_alignment(poi: Transform3D) -> void:
+	if _npc == null or _visual == null or not _visual_base_captured:
+		return
+
+	_npc.set_frozen(true)
+	_npc.set_collision_enabled(false)
+	_kill_align_tween()
+
+	# El offset es la diferencia entre el POI y la posición física real
+	# (no el marker de aproximación), expresada en el espacio del cuerpo.
+	var local_delta := _npc.global_transform.basis.inverse() \
+		* (poi.origin - _npc.global_position)
+	var target_position := _visual_base_position + local_delta
+
+	var start_yaw := _visual.rotation.y
+	var target_yaw := start_yaw
+	var forward := -poi.basis.z
+	forward.y = 0.0
+	if forward.length_squared() > 0.000001:
+		forward = forward.normalized()
+		target_yaw = atan2(-forward.x, -forward.z)
+
+	if align_duration <= 0.0:
+		_visual.position = target_position
+		_visual.rotation.y = target_yaw
+		return
+
+	var delta_yaw := wrapf(target_yaw - start_yaw, -PI, PI)
+	_align_tween = create_tween()
+	_align_tween.set_parallel(true)
+	_align_tween.set_ease(Tween.EASE_OUT)
+	_align_tween.set_trans(Tween.TRANS_SINE)
+	_align_tween.tween_property(
+		_visual, "position", target_position, align_duration
+	)
+	_align_tween.tween_method(
+		func(value: float) -> void: _visual.rotation.y = value,
+		start_yaw,
+		start_yaw + delta_yaw,
+		align_duration
+	)
+
+
 func _restore_pose() -> void:
 	if _npc == null or not _has_poi:
 		return
-	_npc.teleport_to(_exit_transform)
+	if _visual != null and _visual_base_captured:
+		_visual.position = _visual_base_position
+	if not _soft_align:
+		_npc.teleport_to(_exit_transform)
 	_npc.set_collision_enabled(true)
 
 
@@ -488,6 +596,9 @@ func _resolve_nodes() -> void:
 	_visual = _resolve_visual()
 	if _visual == null:
 		return
+	if not _visual_base_captured:
+		_visual_base_position = _visual.position
+		_visual_base_captured = true
 
 	_skeleton = _find_skeleton(_visual)
 	if _skeleton == null:

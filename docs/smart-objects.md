@@ -31,11 +31,16 @@ AffordanceDef
 NpcBrain
   necesidades → SmartObjectRegistry.claim_best()
              → reserva slot (antes de caminar)
-             → NpcAgent.move_to(punto de uso)
+             → NpcAgent.move_to(Approach)  (llega caminando de verdad)
              → occupy + NpcAnimationManager.play_at(POI, Approach)
              → enter → loop (arranca la duración) → exit → finished
-             → release (o abort con timeout) → vuelve al Approach
+             → release (o abort con timeout)
 ```
+
+El cuerpo del NPC **no se teletransporta** al mueble: camina hasta el
+`Approach_<slot>` (el punto caminable más cercano) y recién entonces empieza la
+secuencia. La diferencia entre esa posición y el `POI` se resuelve moviendo el
+modelo visual de forma suave durante la animación de entrada.
 
 ## Archivos
 
@@ -143,12 +148,13 @@ de SmartObjects: sólo recibe un set, un POI y un punto de salida.
 
 ```
 NpcAnimationManager
-  play_at(set, poi, exit_transform)
-    ├─ alinea al NPC al POI y desactiva su colisión
+  play_at(set, poi, exit_transform, soft_align = true)
+    ├─ congela al NPC y desactiva su colisión
+    ├─ desplaza el modelo hasta el POI (suave, sin mover el cuerpo)
     ├─ enter   (una vez)
     ├─ loop    (loop_mode linear)  → emite loop_started
-    ├─ exit    (request_exit)
-    └─ finished → vuelve al exit_transform y reactiva la colisión
+    ├─ exit    (request_exit) → el modelo vuelve al punto de salida
+    └─ finished → reactiva la colisión
 ```
 
 Señales: `phase_started(phase)`, `loop_started`, `finished`, `canceled`.
@@ -192,9 +198,24 @@ respaldar en `+Z` y el frente en `-Z`, `POI_0` se coloca delante del asiento
 Mixamo mueve la cadera hacia atrás al sentarse, así que el origen del POI queda
 donde están los pies al empezar a sentarse.
 
+La IA camina hasta `Approach_<slot>` (el punto caminable más cercano al
+mueble) y sólo entonces llama a `play_at`. El manager no mueve el cuerpo:
+
+- calcula `offset = POI - posición real del cuerpo` (en espacio local);
+- desplaza el nodo `Visual` hasta ese offset con `align_duration` (0.4 s por
+  defecto), mientras corre la animación de entrada;
+- al salir, devuelve el `Visual` a su posición original con
+  `exit_return_duration` (0.35 s), acompañando la animación de levantarse.
+
+Así no hay teletransporte ni deslizamiento del cuerpo: el NPC llega caminando,
+se sienta con un pequeño desplazamiento del modelo y al levantarse vuelve a
+quedar donde llegó. `max_soft_align_distance` (1.5 m) evita que un llamado
+directo a `play_at` desde lejos genere un deslizamiento enorme: en ese caso se
+cae al modo clásico de alinear el cuerpo al POI.
+
 Mientras la secuencia está activa el NPC queda congelado y sin collider. Al
-terminar (o abortar) el manager lo teletransporta al `Approach_<slot>` y
-reactiva la colisión; el cerebro recién entonces lo descongela.
+terminar (o abortar) el manager reactiva la colisión; el cerebro recién
+entonces lo descongela.
 
 ### Duración
 
@@ -232,9 +253,10 @@ con `NpcAgent.play_interaction()`.
   rehornea con debounce. El collider del mueble recorta el NavMesh.
 - `require_floor_for_objects` (en `BuildController`) exige un suelo debajo.
 - Al borrar, el orden de prioridad es **objeto → pared → suelo**.
-- `get_approach_position()` es solo una sugerencia: la IA mueve al NPC al punto
-  de uso y el `NavigationAgent3D` lo ajusta a la superficie caminable. Así el
-  NPC nunca intenta entrar al collider del mueble.
+- La IA mueve al NPC a `get_approach_position()`: el `NavigationAgent3D` lo
+  ajusta a la superficie caminable, así el NPC nunca intenta entrar al
+  collider del mueble. El resto de la distancia hasta el `POI` lo cubre el
+  desplazamiento suave del modelo.
 
 ## Demo
 
@@ -244,6 +266,9 @@ Godot.exe --path . res://scenes/demo/smart_object_demo.tscn
 
 Cuatro NPC con la necesidad `rest` alta buscan las sillas repartidas por las
 habitaciones.
+
+Para población generada en runtime (aparece, usa un objeto y desaparece), ver
+[spawners de NPCs](npc-spawners.md).
 
 ## Pruebas
 

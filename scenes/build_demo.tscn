@@ -6,8 +6,8 @@
 [ext_resource type="Texture2D" uid="uid://vc4apduw8s7s" path="res://addons/func_godot/textures/default_texture.png" id="4_dkkdp"]
 [ext_resource type="Resource" uid="uid://bkhxcqsquw1yg" path="res://addons/func_godot/func_godot_default_map_settings.tres" id="4_e28x7"]
 [ext_resource type="Material" uid="uid://cl23cvr0l0hfg" path="res://maps/textures/Tiny/Grass/Grass_20-512x512.tres" id="4_pwlei"]
-[ext_resource type="PackedScene" path="res://scripts/Characters/npc/npc.tscn" id="6_npc"]
 [ext_resource type="Script" uid="uid://2ix5n7aarg8e" path="res://scenes/build_demo.gd" id="8_script"]
+[ext_resource type="PackedScene" path="res://scripts/Characters/npc/npc_spawner.tscn" id="9_7ucqo"]
 [ext_resource type="PackedScene" uid="uid://dkyy2nqnxsf26" path="res://maps/terrain_01.glb" id="9_qsnn4"]
 
 [sub_resource type="Environment" id="Environment_main"]
@@ -69,7 +69,8 @@ shadow_blur = 0.0
 [node name="BuildSystem" parent="." unique_id=1715999772 instance=ExtResource("2_build")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.02, -22)
 
-[node name="Ground" type="StaticBody3D" parent="." unique_id=1667772600]
+[node name="Ground" type="StaticBody3D" parent="." unique_id=1667772600 groups=["navigation_static"]]
+transform = Transform3D(2.5, 0, 0, 0, 1, 0, 0, 0, 2.5, 0, 0, 0)
 visible = false
 
 [node name="MeshInstance3D" type="MeshInstance3D" parent="Ground" unique_id=1284561626]
@@ -99,15 +100,16 @@ shape = SubResource("ConvexPolygonShape3D_7ucqo")
 [node name="FPSPlayer" parent="." unique_id=21838221 instance=ExtResource("1_player")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.05, 9)
 
-[node name="NPCs" type="Node3D" parent="." unique_id=171097401]
+[node name="terrain_01" parent="." unique_id=2003459777 groups=["navigation_static"] instance=ExtResource("9_qsnn4")]
 
-[node name="NPC1" parent="NPCs" unique_id=745078277 instance=ExtResource("6_npc")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2.8, 0.02, 5.1)
+[node name="NPCs" type="Node3D" parent="." unique_id=1638889886]
 
-[node name="NPC2" parent="NPCs" unique_id=2067899823 instance=ExtResource("6_npc")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2.5, 0.02, 4)
+[node name="Spawners" type="Node3D" parent="." unique_id=1638889887]
 
-[node name="NPC3" parent="NPCs" unique_id=1313018664 instance=ExtResource("6_npc")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -4.5, 0.02, 2)
+[node name="SpawnerA" parent="Spawners" unique_id=654457107 instance=ExtResource("9_7ucqo")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0.1, -57)
+npc_parent_path = NodePath("../NPCs")
 
-[node name="terrain_01" parent="." unique_id=2003459777 instance=ExtResource("9_qsnn4")]
+[node name="SpawnerB" parent="Spawners" unique_id=584634702 instance=ExtResource("9_7ucqo")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.5, 0.1, 75.5)
+npc_parent_path = NodePath("../NPCs")

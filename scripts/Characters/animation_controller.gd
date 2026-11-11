@@ -129,6 +129,12 @@ func hold(estado: StringName) -> void:
 func release() -> void:
 	_oneshot = StringName()
 	_capa_stop()
+	# Si el sistema aun no se armo (NPC recien instanciado), no hay nada que
+	# soltar: evitamos tocar _sm/_playback nulos.
+	if not _listo:
+		_state = LOCOMOTION
+		_hold_anterior = StringName()
+		return
 	var destino := _hold_anterior if _hold_anterior != StringName() else LOCOMOTION
 	if _sm.has_node(destino):
 		_playback.travel(destino)
@@ -143,6 +149,9 @@ func release() -> void:
 func cancel() -> void:
 	_oneshot = StringName()
 	_hold_anterior = StringName()
+	if not _listo:
+		_state = LOCOMOTION
+		return
 	_playback.travel(LOCOMOTION)
 	_state = LOCOMOTION
 

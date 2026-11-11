@@ -75,13 +75,28 @@ func _run() -> void:
 	var poi := Transform3D(Basis(Vector3.UP, yaw), Vector3(2.0, 0.0, 3.0))
 	var exit := Transform3D(Basis(Vector3.UP, yaw), Vector3(2.0, 0.0, 2.0))
 
+	# El NPC llega caminando al Approach; la secuencia no debe mover el cuerpo.
+	npc.global_position = exit.origin
+	await physics_frame
+
+	var body_start := npc.global_position
 	var ok := manager.play_at(set_res, poi, exit)
 	_check(ok, "el manager arranca la secuencia")
 	_check(manager.is_playing(), "el manager queda activo")
 	_check(manager.get_loaded_clip_count() >= 1, "retargeteó el primer clip")
-	_check(npc.global_position.distance_to(poi.origin) < 0.01,
-		"alineó al NPC al POI")
-	_check(absf(wrapf(npc.get_node("Visual").rotation.y - yaw, -PI, PI)) < 0.01,
+	_check(npc.global_position.distance_to(body_start) < 0.02,
+		"el cuerpo no se teletransporta al POI")
+
+	# El modelo se desliza suavemente hasta el POI.
+	var visual := npc.get_node("Visual") as Node3D
+	var align_deadline := Time.get_ticks_msec() + 3000
+	while (visual.global_position.distance_to(poi.origin) > 0.02
+			or absf(wrapf(visual.rotation.y - yaw, -PI, PI)) > 0.01) \
+			and Time.get_ticks_msec() < align_deadline:
+		await process_frame
+	_check(visual.global_position.distance_to(poi.origin) < 0.02,
+		"el modelo se alinea suavemente al POI")
+	_check(absf(wrapf(visual.rotation.y - yaw, -PI, PI)) < 0.01,
 		"giró el modelo según el POI")
 
 	# Colisión desactivada (set_deferred aplica en el próximo idle).

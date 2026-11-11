@@ -13,6 +13,9 @@ extends CharacterBody3D
 ## Se emite una sola vez cuando el NPC llega al destino de `move_to()`.
 signal arrived
 
+## Distancia de llegada por defecto del NavigationAgent3D.
+const DEFAULT_ARRIVE_DISTANCE := 0.4
+
 @export_group("Movimiento")
 @export var speed := 2.2
 @export var acceleration := 8.0
@@ -59,7 +62,7 @@ func _ready() -> void:
 
 	if _agent != null:
 		_agent.path_desired_distance = 0.4
-		_agent.target_desired_distance = 0.4
+		_agent.target_desired_distance = DEFAULT_ARRIVE_DISTANCE
 		_agent.path_max_distance = 2.0
 		_agent.radius = 0.35
 		_agent.height = 1.8
@@ -93,11 +96,18 @@ func _deferred_start() -> void:
 # --------------------------------------------------------------------------
 
 ## Envia el NPC a una posicion del mundo (se ajusta al NavMesh mas cercano).
-func move_to(world_position: Vector3) -> void:
+## `arrive_distance` permite exigir una llegada mas fina (por ejemplo, para
+## acercarse de verdad al punto de aproximacion de un SmartObject). Un valor
+## <= 0 restaura la distancia por defecto.
+func move_to(world_position: Vector3, arrive_distance := 0.0) -> void:
 	if _agent == null:
 		return
 	if not _nav_ready:
 		await get_tree().physics_frame
+
+	_agent.target_desired_distance = (
+		arrive_distance if arrive_distance > 0.0 else DEFAULT_ARRIVE_DISTANCE
+	)
 
 	var map := get_world_3d().navigation_map
 	var target := NavigationServer3D.map_get_closest_point(map, world_position)
@@ -166,12 +176,13 @@ func get_animation_manager() -> NpcAnimationManager:
 func play_animation_sequence(
 	set: SmartAnimationSet,
 	poi: Transform3D,
-	exit_transform: Transform3D
+	exit_transform: Transform3D,
+	soft_align := true
 ) -> bool:
 	var manager := get_animation_manager()
 	if manager == null:
 		return false
-	return manager.play_at(set, poi, exit_transform)
+	return manager.play_at(set, poi, exit_transform, soft_align)
 
 
 func cancel_animation_sequence() -> void:
