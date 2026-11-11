@@ -10,11 +10,14 @@ extends Node3D
 ## inspector, asi que basta con anadir `scripts/sistemas/build/build_system.tscn` a una escena
 ## que tenga un FPSPlayer.
 
-enum Tool { FLOOR, WALL, ERASE }
+enum Tool { FLOOR, WALL, OBJECT, ERASE }
 
 ## Se emite cuando cambia el conjunto de piezas colocadas (colocar, borrar o
 ## limpiar). La navegación lo usa para rehornear el NavMesh con debounce.
 signal pieces_changed
+## Se emite al colocar / borrar un SmartObject (muebles, props interactivos).
+signal object_placed(object: Node)
+signal object_removed(object: Node)
 
 const FLOOR_PREFAB := preload("res://scripts/sistemas/build/prefabs/floor_tile.tscn")
 const WALL_PREFAB := preload("res://scripts/sistemas/build/prefabs/wall_segment.tscn")
@@ -36,6 +39,13 @@ const COLOR_ERASE := Color(1.0, 0.45, 0.2, 0.5)
 @export var wall_height := 2.8
 @export var wall_thickness := 0.2
 
+@export_group("Objetos")
+## Si un objeto (mueble/prop) solo puede colocarse sobre un suelo construido.
+@export var require_floor_for_objects := true
+## Desplazamiento vertical extra al colocar objetos (útil si el suelo visual
+## queda unos centímetros por encima del plano de la grilla).
+@export var object_height_offset := 0.03
+
 @export_group("Interfaz")
 @export var show_help := true
 @export var start_in_build_mode := false
@@ -45,13 +55,21 @@ var tool: Tool = Tool.FLOOR
 
 var _floors: Dictionary = {}
 var _walls: Dictionary = {}
+## Celda primaria -> pieza. Para objetos de varias celdas, `_object_cells`
+## guarda todas las celdas cubiertas (y sirve para colisiones de huella).
+var _objects: Dictionary = {}
+var _object_cells: Dictionary = {}
 
 var build_items: Array[BuildItem] = []
 var selected_item: BuildItem
+var _selected_object_item: BuildItem
+## Rotación del objeto en pasos de 90 grados (0..3).
+var _object_rotation := 0
 var _active_map_file: String = ""
 
 var _floor_ghost: MeshInstance3D
 var _wall_ghost: MeshInstance3D
+var _object_ghost: MeshInstance3D
 var _ghost_material: StandardMaterial3D
 
 var _hover_cell := Vector2i.ZERO
@@ -83,6 +101,10 @@ var _camera_framed := false
 var _ui_layer: CanvasLayer
 var _ui_title: Label
 var _ui_tool: Label
+## Avisos breves (guardado/carga). Se muestran siempre, esté o no activo el
+## modo construcción, para que el jugador tenga feedback inmediato.
+var _message_layer: CanvasLayer
+var _ui_message: Label
 
 
 func _ready() -> void:
@@ -98,6 +120,8 @@ func _ready() -> void:
 	if _ui_layer != null:
 		_ui_layer.visible = false
 	set_process(false)
+
+	call_deferred("load_construction")
 
 	if start_in_build_mode:
 		enter_build_mode()
@@ -187,6 +211,30 @@ func set_tool(new_tool: Tool) -> void:
 # Entrada
 # --------------------------------------------------------------------------
 
+## El guardado se atiende en `_input` (antes que la UI y que el resto del
+## juego) para que ningún otro nodo pueda consumir la tecla.
+func _input(event: InputEvent) -> void:
+	if event is InputEventKey and _is_save_key(event as InputEventKey):
+		save_construction()
+		get_viewport().set_input_as_handled()
+
+
+## Teclas aceptadas para guardar: `°`, `º`, `ª`, la acción `build_save` o
+## `Ctrl+S` (atajo alternativo por si la distribución del teclado no genera `°`).
+func _is_save_key(key_event: InputEventKey) -> bool:
+	if not key_event.pressed or key_event.echo:
+		return false
+	if key_event.ctrl_pressed and not key_event.alt_pressed and key_event.keycode == KEY_S:
+		return true
+	if key_event.is_action_pressed("build_save"):
+		return true
+	var u := key_event.unicode
+	if u == 176 or u == 186 or u == 170:
+		return true
+	var label := key_event.as_text_key_label()
+	return label == "°" or label == "º" or label == "ª"
+
+
 func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("build_toggle"):
 		if build_mode:
@@ -210,6 +258,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed("build_tool_erase"):
 		set_tool(Tool.ERASE)
+		get_viewport().set_input_as_handled()
+	elif event.is_action_pressed("build_rotate") and tool == Tool.OBJECT:
+		rotate_object()
 		get_viewport().set_input_as_handled()
 
 
@@ -242,6 +293,14 @@ func _process(_delta: float) -> void:
 				_start_wall_drag()
 			if _wall_dragging:
 				_update_wall_drag()
+	elif tool == Tool.OBJECT:
+		# Un clic = un objeto. Arrastrar no debe llenar la sala de muebles.
+		# Ignorar clics sobre la UI (menú de items).
+		var pressed := Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
+		var over_ui := get_viewport().gui_get_hovered_control() != null
+		if pressed and not _painting and not over_ui:
+			_apply_tool()
+		_painting = pressed
 	else:
 		_painting = Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
 		if _painting:
@@ -263,8 +322,35 @@ func get_wall_count() -> int:
 	return _walls.size()
 
 
+func get_object_count() -> int:
+	return _objects.size()
+
+
+## Objeto colocado cuya huella cubre `cell` (o null).
+func get_object_at(cell: Vector2i) -> BuildPiece:
+	if not _object_cells.has(cell):
+		return null
+	var piece = _object_cells[cell]
+	return piece as BuildPiece
+
+
+func get_objects() -> Array[BuildPiece]:
+	var out: Array[BuildPiece] = []
+	for piece in _objects.values():
+		if is_instance_valid(piece):
+			out.append(piece as BuildPiece)
+	return out
+
+
+## Rota el objeto seleccionado 90 grados (para la herramienta OBJECT).
+func rotate_object() -> void:
+	_object_rotation = (_object_rotation + 1) % 4
+	_update_ui()
+
+
 func clear_all() -> void:
-	var had_pieces := not _floors.is_empty() or not _walls.is_empty()
+	var had_pieces := not _floors.is_empty() or not _walls.is_empty() \
+		or not _objects.is_empty()
 	_clear_corner_pieces()
 	_wall_corner_path.clear()
 	_hidden_walls.clear()
@@ -272,8 +358,12 @@ func clear_all() -> void:
 		piece.queue_free()
 	for piece: Node in _walls.values():
 		piece.queue_free()
+	for piece: Node in _objects.values():
+		piece.queue_free()
 	_floors.clear()
 	_walls.clear()
+	_objects.clear()
+	_object_cells.clear()
 	if had_pieces:
 		pieces_changed.emit()
 
@@ -288,6 +378,23 @@ func place_wall(key: Vector3i) -> bool:
 	return _place_wall(key)
 
 
+## Coloca el objeto seleccionado por API. `rotation_steps` = cuartos de vuelta.
+func place_object(cell: Vector2i, rotation_steps: int = -1) -> bool:
+	if _selected_object_item == null:
+		return false
+	var steps := _object_rotation if rotation_steps < 0 else rotation_steps
+	return _place_object(cell, _selected_object_item, steps)
+
+
+## Coloca un BuildItem de tipo objeto concreto (útil para tests y scripts).
+func place_object_item(
+	item: BuildItem,
+	cell: Vector2i,
+	rotation_steps: int = 0
+) -> bool:
+	return _place_object(cell, item, rotation_steps)
+
+
 ## Borra por API respetando la prioridad de la herramienta (pared, luego suelo).
 func erase_at(cell: Vector2i, wall: Vector3i) -> bool:
 	return _erase_at(cell, wall)
@@ -299,6 +406,9 @@ func _apply_tool() -> void:
 			_place_floor(_hover_cell)
 		Tool.WALL:
 			_place_wall(_hover_wall)
+		Tool.OBJECT:
+			if _selected_object_item != null:
+				_place_object(_hover_cell, _selected_object_item, _object_rotation)
 		Tool.ERASE:
 			_erase_at(_hover_cell, _hover_wall)
 
@@ -311,6 +421,58 @@ func _can_place_wall(key: Vector3i) -> bool:
 	return grid.is_wall_inside(key) and not _walls.has(key)
 
 
+func _can_place_object(cell: Vector2i, item: BuildItem) -> bool:
+	if item == null or item.scene == null:
+		return false
+	var footprint := Vector2i(maxi(item.footprint.x, 1), maxi(item.footprint.y, 1))
+	for dx in footprint.x:
+		for dz in footprint.y:
+			var c := cell + Vector2i(dx, dz)
+			if not grid.is_cell_inside(c):
+				return false
+			if _object_cells.has(c):
+				return false
+			if require_floor_for_objects and not _floors.has(c):
+				return false
+	return true
+
+
+## Instancia un objeto (mueble/prop). La raíz de la escena puede ser un
+## SmartObject; si no lo es, `_spawn_piece` la envuelve en un BuildPiece.
+func _place_object(cell: Vector2i, item: BuildItem, rotation_steps: int) -> bool:
+	if not _can_place_object(cell, item):
+		return false
+
+	var piece := _spawn_piece(item.scene)
+	if piece == null:
+		return false
+
+	if piece is SmartObject:
+		var smart := piece as SmartObject
+		if smart.definition == null and item.smart_object != null:
+			smart.definition = item.smart_object
+
+	var steps := wrapi(rotation_steps, 0, 4)
+	var yaw := float(steps) * PI * 0.5
+	piece.is_wall = false
+	piece.cell = cell
+	piece.item_id = item.id
+	piece.object_rotation_steps = steps
+	piece.name = "Object_%s_%d_%d" % [String(item.id), cell.x, cell.y]
+	piece.global_position = grid.cell_center(cell) + Vector3.UP * object_height_offset
+	piece.global_rotation = Vector3(0.0, yaw, 0.0)
+
+	var footprint := Vector2i(maxi(item.footprint.x, 1), maxi(item.footprint.y, 1))
+	for dx in footprint.x:
+		for dz in footprint.y:
+			_object_cells[cell + Vector2i(dx, dz)] = piece
+	_objects[cell] = piece
+
+	object_placed.emit(piece)
+	pieces_changed.emit()
+	return true
+
+
 func _place_floor(cell: Vector2i) -> bool:
 	if not _can_place_floor(cell):
 		return false
@@ -321,6 +483,7 @@ func _place_floor(cell: Vector2i) -> bool:
 
 	piece.is_wall = false
 	piece.cell = cell
+	piece.item_id = _current_item_id("floor")
 	piece.name = "Floor_%d_%d" % [cell.x, cell.y]
 	var floor_mi := piece.get_node_or_null("MeshInstance3D") as MeshInstance3D
 	if floor_mi != null:
@@ -444,6 +607,10 @@ func _finish_wall_drag() -> void:
 
 
 func _erase_at(cell: Vector2i, wall: Vector3i) -> bool:
+	if _object_cells.has(cell):
+		_erase_object_at(cell)
+		pieces_changed.emit()
+		return true
 	if _walls.has(wall):
 		_remove(_walls, wall)
 		_refresh_wall_variants()
@@ -455,6 +622,26 @@ func _erase_at(cell: Vector2i, wall: Vector3i) -> bool:
 		pieces_changed.emit()
 		return true
 	return false
+
+
+func _erase_object_at(cell: Vector2i) -> void:
+	if not _object_cells.has(cell):
+		return
+	var piece = _object_cells[cell]
+
+	# Quitar todas las celdas cubiertas y la entrada primaria.
+	for c in _object_cells.keys():
+		if _object_cells[c] == piece:
+			_object_cells.erase(c)
+	for c in _objects.keys():
+		if _objects[c] == piece:
+			_objects.erase(c)
+
+	if is_instance_valid(piece):
+		if piece is SmartObject:
+			(piece as SmartObject).release_all()
+		object_removed.emit(piece)
+		piece.queue_free()
 
 
 func _remove(collection: Dictionary, key: Variant) -> void:
@@ -496,6 +683,7 @@ func _apply_selected_item() -> void:
 		return
 	var scene := selected_item.scene
 	_active_map_file = selected_item.map_file
+	_selected_object_item = null
 	match selected_item.object_type:
 		"floor", "suelo":
 			tool = Tool.FLOOR
@@ -509,10 +697,32 @@ func _apply_selected_item() -> void:
 				_corner_scene_cache.clear()
 				_corner_trim_cache.clear()
 				_corner_footprint_cache.clear()
+		"furniture", "prop", "mueble", "objeto":
+			tool = Tool.OBJECT
+			_selected_object_item = selected_item
 		_:
-			# Tipos aún no colocables (techo, aberturas, muebles, ...).
+			# Tipos aún no colocables (techo, aberturas, ...).
 			pass
 	_update_ui()
+
+
+## Id del item que corresponde a la pieza que se va a instanciar. Se deduce
+## de la escena/mapa activos para que el guardado no dependa de cuál sea el
+## último item seleccionado en el menú.
+func _current_item_id(kind: String) -> StringName:
+	var types := ["floor", "suelo"] if kind == "floor" else ["wall", "pared"]
+	if _active_map_file != "":
+		for item in build_items:
+			if item.map_file == _active_map_file:
+				return item.id
+	var scene: PackedScene = floor_scene if kind == "floor" else wall_scene
+	if scene != null:
+		for item in build_items:
+			if item.object_type in types and item.scene == scene:
+				return item.id
+	if selected_item != null and selected_item.object_type in types:
+		return selected_item.id
+	return &""
 
 
 func _find_build_menu(node: Node) -> BuildMenu:
@@ -590,7 +800,7 @@ func _refresh_wall_shapes() -> void:
 
 ## Crea la pieza fisica de una pared (siempre el muro normal, con colision).
 ## La esquina, si toca, se anade aparte como pieza puramente visual.
-func _spawn_wall_piece(key: Vector3i) -> BuildPiece:
+func _spawn_wall_piece(key: Vector3i, keep_item_id: StringName = &"") -> BuildPiece:
 	var piece: BuildPiece
 	if _active_map_file != "":
 		piece = _spawn_map_piece(_active_map_file)
@@ -601,6 +811,7 @@ func _spawn_wall_piece(key: Vector3i) -> BuildPiece:
 
 	piece.is_wall = true
 	piece.wall_key = key
+	piece.item_id = keep_item_id if keep_item_id != &"" else _current_item_id("wall")
 	piece.name = "Wall_%d_%d_%d" % [key.x, key.y, key.z]
 	piece.set_dimensions(Vector3(grid.cell_size, wall_height, wall_thickness))
 	var piece_mi := piece.get_node_or_null("MeshInstance3D") as MeshInstance3D
@@ -948,9 +1159,11 @@ func _refresh_wall_variants() -> void:
 	var keys := _walls.keys().duplicate()
 	for key in keys:
 		var old_piece = _walls[key]
+		var keep_id: StringName = &""
 		if is_instance_valid(old_piece):
+			keep_id = old_piece.item_id
 			old_piece.queue_free()
-		var piece := _spawn_wall_piece(key)
+		var piece := _spawn_wall_piece(key, keep_id)
 		if piece == null:
 			continue
 		piece.visible = not _hidden_walls.has(key) and not _wall_corner_path.has(key)
@@ -1119,8 +1332,13 @@ func _update_ghosts() -> void:
 		Tool.WALL:
 			_show_wall_ghost(grid.clamp_wall(_hover_wall),
 				_can_place_wall(_hover_wall), false)
+		Tool.OBJECT:
+			_show_object_ghost(grid.clamp_cell(_hover_cell),
+				_can_place_object(_hover_cell, _selected_object_item), false)
 		Tool.ERASE:
-			if _walls.has(_hover_wall):
+			if _object_cells.has(_hover_cell):
+				_show_object_ghost(grid.clamp_cell(_hover_cell), true, true)
+			elif _walls.has(_hover_wall):
 				_show_wall_ghost(_hover_wall, true, true)
 			else:
 				_show_floor_ghost(grid.clamp_cell(_hover_cell),
@@ -1147,6 +1365,27 @@ func _show_wall_ghost(key: Vector3i, valid: bool, erasing: bool) -> void:
 	_set_ghost_color(valid, erasing)
 
 
+func _show_object_ghost(cell: Vector2i, valid: bool, erasing: bool) -> void:
+	_object_ghost.visible = true
+	var box := _object_ghost.mesh as BoxMesh
+	var footprint := Vector2i(1, 1)
+	if _selected_object_item != null:
+		footprint = Vector2i(
+			maxi(_selected_object_item.footprint.x, 1),
+			maxi(_selected_object_item.footprint.y, 1)
+		)
+	box.size = Vector3(
+		grid.cell_size * 0.8 * footprint.x,
+		0.9,
+		grid.cell_size * 0.8 * footprint.y
+	)
+	_object_ghost.global_transform = Transform3D(
+		Basis(Vector3.UP, float(_object_rotation) * PI * 0.5),
+		grid.cell_center(cell) + Vector3.UP * 0.45
+	)
+	_set_ghost_color(valid, erasing)
+
+
 func _set_ghost_color(valid: bool, erasing: bool) -> void:
 	if erasing:
 		_ghost_material.albedo_color = COLOR_ERASE
@@ -1161,6 +1400,8 @@ func _hide_ghosts() -> void:
 		_floor_ghost.visible = false
 	if _wall_ghost != null:
 		_wall_ghost.visible = false
+	if _object_ghost != null:
+		_object_ghost.visible = false
 
 
 # --------------------------------------------------------------------------
@@ -1214,6 +1455,7 @@ func _create_ghosts() -> void:
 
 	_floor_ghost = _make_ghost("FloorGhost")
 	_wall_ghost = _make_ghost("WallGhost")
+	_object_ghost = _make_ghost("ObjectGhost")
 
 
 func _make_ghost(node_name: String) -> MeshInstance3D:
@@ -1243,7 +1485,7 @@ func _create_ui() -> void:
 
 	var hint := _make_label(
 		"WASD: mover cámara   ·   clic derecho: orbitar   ·   rueda: zoom   ·   Q/E: altura\n"
-		+ "1: suelo   ·   2: pared   ·   3: borrar   ·   B / Esc: salir",
+		+ "1: suelo   ·   2: pared   ·   3: borrar   ·   M: menú   ·   R: rotar   ·   ° / Ctrl+S: guardar   ·   B / Esc: salir",
 		15, Color(0.85, 0.9, 0.95, 0.9)
 	)
 	hint.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
@@ -1252,6 +1494,22 @@ func _create_ui() -> void:
 	hint.offset_right = 980
 	hint.offset_bottom = -14
 	_ui_layer.add_child(hint)
+
+	# Avisos de guardado/carga: capa propia, visible siempre.
+	_message_layer = CanvasLayer.new()
+	_message_layer.name = "BuildMessages"
+	_message_layer.layer = 11
+	add_child(_message_layer)
+
+	_ui_message = _make_label("", 20, Color(0.6, 1.0, 0.7))
+	_ui_message.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_ui_message.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+	_ui_message.offset_left = -360
+	_ui_message.offset_right = 360
+	_ui_message.offset_top = 16
+	_ui_message.offset_bottom = 52
+	_ui_message.visible = false
+	_message_layer.add_child(_ui_message)
 
 
 func _make_label(text: String, font_size: int, color: Color) -> Label:
@@ -1287,6 +1545,10 @@ func _tool_name() -> String:
 			return "Herramienta: suelo"
 		Tool.WALL:
 			return "Herramienta: pared"
+		Tool.OBJECT:
+			if _selected_object_item != null:
+				return "Herramienta: objeto (%s)" % _selected_object_item.display_name
+			return "Herramienta: objeto"
 		Tool.ERASE:
 			return "Herramienta: borrar"
 	return ""
@@ -1354,3 +1616,211 @@ func _find_camera(node: Node) -> Camera3D:
 		if found != null:
 			return found
 	return null
+
+
+# --------------------------------------------------------------------------
+# Guardado / carga por nivel
+# --------------------------------------------------------------------------
+
+func _find_item_by_id(id: StringName) -> BuildItem:
+	if id == &"":
+		return null
+	for item in build_items:
+		if item.id == id:
+			return item
+	return null
+
+
+func get_build_save_path() -> String:
+	var scene := get_tree().current_scene if get_tree() != null else null
+	var scene_path := scene.scene_file_path if scene != null else ""
+	if scene_path.begins_with("res://"):
+		return scene_path.get_basename() + ".build.json"
+	return _get_user_build_save_path()
+
+
+func _get_user_build_save_path() -> String:
+	var scene := get_tree().current_scene if get_tree() != null else null
+	var scene_path := scene.scene_file_path if scene != null else ""
+	var base := scene_path.get_file().get_basename() if scene_path != "" else ""
+	if base == "" and scene != null:
+		base = String(scene.name).to_snake_case()
+	if base == "":
+		base = "level"
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("user://build_saves"))
+	return "user://build_saves/%s.build.json" % base
+
+
+func save_construction() -> void:
+	var data := {
+		"version": 1,
+		"floors": [],
+		"walls": [],
+		"objects": [],
+	}
+	for cell in _floors.keys():
+		var piece: BuildPiece = _floors[cell]
+		if not is_instance_valid(piece):
+			continue
+		data["floors"].append({
+			"x": cell.x,
+			"y": cell.y,
+			"item_id": String(piece.item_id),
+		})
+	for key in _walls.keys():
+		var piece: BuildPiece = _walls[key]
+		if not is_instance_valid(piece):
+			continue
+		data["walls"].append({
+			"x": key.x,
+			"y": key.y,
+			"axis": key.z,
+			"item_id": String(piece.item_id),
+		})
+	for cell in _objects.keys():
+		var piece: BuildPiece = _objects[cell]
+		if not is_instance_valid(piece):
+			continue
+		data["objects"].append({
+			"x": cell.x,
+			"y": cell.y,
+			"item_id": String(piece.item_id),
+			"rotation": piece.object_rotation_steps,
+		})
+
+	var path := get_build_save_path()
+	if not _write_build_save(path, data):
+		var fallback := _get_user_build_save_path()
+		if fallback != path and _write_build_save(fallback, data):
+			path = fallback
+		else:
+			push_warning("BuildController: no se pudo guardar la construcción en %s" % path)
+			_show_build_message("No se pudo guardar la construcción", Color(1.0, 0.5, 0.4))
+			return
+	var total := int(data["floors"].size()) + int(data["walls"].size()) + int(data["objects"].size())
+	print("BuildController: construcción guardada en %s (%d suelos, %d paredes, %d objetos)" % [
+		path, data["floors"].size(), data["walls"].size(), data["objects"].size()
+	])
+	_show_build_message(
+		"Construcción guardada: %d piezas  ·  %s" % [total, path],
+		Color(0.6, 1.0, 0.7)
+	)
+
+
+func _write_build_save(path: String, data: Dictionary) -> bool:
+	var dir_path := path.get_base_dir()
+	if dir_path.begins_with("res://"):
+		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir_path))
+	elif dir_path.begins_with("user://"):
+		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir_path))
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		return false
+	file.store_string(JSON.stringify(data, "\t"))
+	file.close()
+	return true
+
+
+## Muestra un aviso breve centrado arriba. Funciona también con el modo
+## construcción desactivado, así el jugador ve que el guardado ocurrió.
+func _show_build_message(text: String, color: Color = Color(0.95, 0.97, 1.0)) -> void:
+	if _ui_message == null:
+		return
+	_ui_message.text = text
+	_ui_message.add_theme_color_override("font_color", color)
+	_ui_message.visible = true
+	if get_tree() == null:
+		return
+	await get_tree().create_timer(2.5).timeout
+	if is_instance_valid(self) and _ui_message != null:
+		_ui_message.visible = false
+
+
+func load_construction() -> void:
+	if grid == null:
+		return
+	var path := get_build_save_path()
+	if not FileAccess.file_exists(path):
+		var fallback := _get_user_build_save_path()
+		if fallback != path and FileAccess.file_exists(fallback):
+			path = fallback
+		else:
+			return
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		push_warning("BuildController: no se pudo leer la construcción desde %s" % path)
+		return
+	var text := file.get_as_text()
+	file.close()
+	var parsed = JSON.parse_string(text)
+	if typeof(parsed) != TYPE_DICTIONARY:
+		push_warning("BuildController: datos de construcción inválidos en %s" % path)
+		return
+	var data: Dictionary = parsed
+
+	var prev_selected := selected_item
+	var prev_active_map := _active_map_file
+	var prev_tool := tool
+	var changed := false
+
+	# Suelos
+	for entry in data.get("floors", []):
+		if typeof(entry) != TYPE_DICTIONARY:
+			continue
+		var cell := Vector2i(int(entry.get("x", 0)), int(entry.get("y", 0)))
+		if _floors.has(cell):
+			continue
+		var item := _find_item_by_id(StringName(String(entry.get("item_id", ""))))
+		if item != null:
+			selected_item = item
+		if selected_item != null:
+			_apply_selected_item()
+		if _place_floor(cell):
+			changed = true
+
+	# Paredes
+	for entry in data.get("walls", []):
+		if typeof(entry) != TYPE_DICTIONARY:
+			continue
+		var key := Vector3i(int(entry.get("x", 0)), int(entry.get("y", 0)), int(entry.get("axis", 0)))
+		if _walls.has(key):
+			continue
+		var item := _find_item_by_id(StringName(String(entry.get("item_id", ""))))
+		if item != null:
+			selected_item = item
+		if selected_item != null:
+			_apply_selected_item()
+		if _place_wall_silent(key):
+			changed = true
+	if not _walls.is_empty():
+		_refresh_wall_variants()
+		_refresh_wall_shapes()
+
+	# Objetos
+	for entry in data.get("objects", []):
+		if typeof(entry) != TYPE_DICTIONARY:
+			continue
+		var cell := Vector2i(int(entry.get("x", 0)), int(entry.get("y", 0)))
+		if _objects.has(cell):
+			continue
+		var item := _find_item_by_id(StringName(String(entry.get("item_id", ""))))
+		if item == null:
+			continue
+		var rot := int(entry.get("rotation", 0))
+		if _place_object(cell, item, rot):
+			changed = true
+
+	selected_item = prev_selected
+	_active_map_file = prev_active_map
+	if prev_selected != null:
+		_apply_selected_item()
+	else:
+		tool = prev_tool
+	if changed:
+		pieces_changed.emit()
+		var total := get_floor_count() + get_wall_count() + get_object_count()
+		print("BuildController: construcción cargada desde %s (%d piezas)" % [path, total])
+		_show_build_message(
+			"Construcción cargada: %d piezas" % total,
+			Color(0.7, 0.95, 1.0)
+		)

@@ -4,6 +4,8 @@
 [ext_resource type="PackedScene" uid="uid://dc3g5grlcitq6" path="res://models/character/human.glb" id="2_human"]
 [ext_resource type="Script" uid="uid://bpc0a06q7rsmd" path="res://scripts/Characters/animation_controller.gd" id="3_anim"]
 [ext_resource type="AnimationLibrary" uid="uid://c70ure8qbj8ju" path="res://anim/player_library.tres" id="4_lib"]
+[ext_resource type="Script" path="res://scripts/Characters/npc/npc_brain.gd" id="5_brain"]
+[ext_resource type="Script" path="res://scripts/Characters/npc/npc_animation_manager.gd" id="6_anim_manager"]
 
 
 [sub_resource type="CapsuleShape3D" id="Capsule_body"]
@@ -38,3 +40,10 @@ radius = 0.35
 height = 1.8
 max_speed = 2.2
 debug_enabled = true
+
+[node name="NpcBrain" type="Node" parent="."]
+script = ExtResource("5_brain")
+enabled = false
+
+[node name="NpcAnimationManager" type="Node" parent="."]
+script = ExtResource("6_anim_manager")

@@ -1,0 +1,64 @@
+[gd_scene format=3 uid="uid://bt66cmkw6q743"]
+
+[ext_resource type="Script" uid="uid://grxlbk2cktgx" path="res://scripts/sistemas/smart_objects/smart_object.gd" id="1_smart"]
+[ext_resource type="Resource" path="res://data/smart_objects/seat.tres" id="2_seat"]
+
+[sub_resource type="StandardMaterial3D" id="Material_wood"]
+albedo_color = Color(0.42, 0.27, 0.15, 1)
+roughness = 0.82
+
+[sub_resource type="BoxMesh" id="Mesh_seat"]
+material = SubResource("Material_wood")
+size = Vector3(0.58, 0.08, 0.58)
+
+[sub_resource type="BoxMesh" id="Mesh_back"]
+material = SubResource("Material_wood")
+size = Vector3(0.58, 0.5, 0.08)
+
+[sub_resource type="BoxMesh" id="Mesh_leg"]
+material = SubResource("Material_wood")
+size = Vector3(0.06, 0.42, 0.06)
+
+[sub_resource type="BoxShape3D" id="Shape_body"]
+size = Vector3(0.6, 0.9, 0.6)
+
+[node name="Chair" type="StaticBody3D" unique_id=1963282990]
+script = ExtResource("1_smart")
+definition = ExtResource("2_seat")
+
+[node name="Seat" type="MeshInstance3D" parent="." unique_id=1385478365]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.44, 0)
+mesh = SubResource("Mesh_seat")
+
+[node name="Back" type="MeshInstance3D" parent="." unique_id=1396084501]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.68, 0.25)
+mesh = SubResource("Mesh_back")
+
+[node name="LegFL" type="MeshInstance3D" parent="." unique_id=1031285218]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.22, 0.21, -0.22)
+mesh = SubResource("Mesh_leg")
+
+[node name="LegFR" type="MeshInstance3D" parent="." unique_id=1882321169]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.22, 0.21, -0.22)
+mesh = SubResource("Mesh_leg")
+
+[node name="LegBL" type="MeshInstance3D" parent="." unique_id=966806870]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.22, 0.21, 0.22)
+mesh = SubResource("Mesh_leg")
+
+[node name="LegBR" type="MeshInstance3D" parent="." unique_id=2066111822]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.22, 0.21, 0.22)
+mesh = SubResource("Mesh_leg")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="." unique_id=979496895]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.45, 0)
+shape = SubResource("Shape_body")
+
+[node name="Slot_0" type="Marker3D" parent="." unique_id=1161674568]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.45, 0)
+
+[node name="POI_0" type="Marker3D" parent="." unique_id=1320119334]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -0.18)
+
+[node name="Approach_0" type="Marker3D" parent="." unique_id=1086712332]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -0.6)

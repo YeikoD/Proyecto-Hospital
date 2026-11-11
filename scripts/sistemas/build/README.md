@@ -41,6 +41,7 @@ Godot.exe --path . res://scenes/demo/nav_demo.tscn
 | Rueda | Zoom |
 | `WASD` | Desplazar la cámara |
 | `Q` / `E` | Bajar / subir el foco de la cámara |
+| `°` / `Ctrl+S` | Guardar la construcción del nivel |
 | `Esc` | Salir del modo construcción |
 
 ## Integrarlo en una escena
@@ -173,6 +174,12 @@ Tecla por defecto para mostrar/ocultar el menú: `M`.
 Un item puede usar:
 - `scene`: una escena/PackedScene o modelo importado (`.blend`, etc.).
 - `map_file`: un archivo `.map`/`.vmf` de FuncGodot, que se construirá al colocar la pieza.
+- `smart_object`: un `SmartObjectDef` que declara las acciones que la IA puede
+  realizar con el objeto. La escena debe tener raíz `SmartObject`. Ver
+  [docs/smart-objects.md](../../../docs/smart-objects.md).
+
+Los items de tipo `furniture` / `prop` se colocan con la herramienta de objetos
+(clic = un objeto, `R` = rotar 90°).
 
 ### Esquinas de pared
 
@@ -193,6 +200,23 @@ El sistema deduce la esquina interior y el borde de celda directamente del
 modelo, y recorta **todas** las mallas de la pieza (un `.blend` puede importarse
 dividido en varios objetos). Así los brazos terminan justo en el borde de la
 celda aunque el modelo se mueva o se divida al editar texturas en Blender.
+
+## Guardado por nivel
+
+En **cualquier momento** (dentro o fuera del modo construccion), pulsar **`°`**
+o **`Ctrl+S`** guarda la construccion actual del nivel (suelos, paredes y
+objetos con su rotacion). Al iniciar el mismo nivel, la construccion se carga
+automaticamente.
+
+Aparece un aviso en pantalla (`Construccion guardada: N piezas`) con la ruta del
+archivo, y el detalle se imprime en la consola de Godot.
+
+- La partida se guarda junto a la escena del nivel como
+  `<escena>.build.json` (por ejemplo `scenes/build_demo.build.json`).
+- Si esa ruta no es escribible (juego exportado), se usa
+  `user://build_saves/<nivel>.build.json`.
+- Las piezas se guardan por el `id` de su `BuildItem`, asi que sobreviven a
+  cambios de escena siempre que el item siga existiendo en `data/build_items`.
 
 ## Estructura
 
@@ -254,22 +278,28 @@ controller.clear_all()
 ```powershell
 Godot.exe --headless --path . --script res://tests/build_smoke_test.gd
 Godot.exe --headless --path . --script res://tests/nav_smoke_test.gd
+Godot.exe --headless --path . --script res://tests/smart_object_smoke_test.gd
+Godot.exe --headless --path . --script res://tests/animation_manager_smoke_test.gd
 ```
 
-Salen con código 0 e imprimen `BUILD_SMOKE_TEST_OK` y `NAV_SMOKE_TEST_OK`
+Salen con código 0 e imprimen `BUILD_SMOKE_TEST_OK`, `NAV_SMOKE_TEST_OK`,
+`SMART_OBJECT_SMOKE_TEST_OK` y `ANIMATION_MANAGER_SMOKE_TEST_OK`
 respectivamente. La prueba de navegación verifica horneado, caminos entre
 habitaciones, puerta de 1 celda, rebake al colocar una pared y destino de NPC.
+La de SmartObjects cubre la interacción completa con la silla animada.
 
 ## Límites de esta versión
 
 - La grilla es un plano fijo: no se adapta al terreno. Conviene ubicar el
   `BuildSystem` a la altura del suelo y, si hay desniveles, usar una zona plana.
 - Suelos y paredes son piezas de 1 celda; todavía no hay muros encadenados,
-  pisos múltiples, puertas ni guardado/carga.
+  pisos múltiples ni puertas.
+- Los objetos (muebles/props) ya se colocan y rotan, pero solo hay un SmartObject
+  de ejemplo (silla). Ver [docs/smart-objects.md](../../../docs/smart-objects.md).
 - Las piezas se instancian una por celda. Para edificios grandes se puede migrar
   a `MultiMesh` más adelante.
-- El borrado quita primero la pared más cercana y, si no hay, el suelo de la
-  celda.
+- El borrado quita primero el objeto de la celda, después la pared más cercana
+  y, si no hay, el suelo.
 - La navegación cubre una sola planta plana. No hay escaleras, rampas ni
   ascensores; el NavMesh se hornea desde los colliders de las piezas.
 - El horneado en hilo puede tardar unos milisegundos en edificios grandes; el

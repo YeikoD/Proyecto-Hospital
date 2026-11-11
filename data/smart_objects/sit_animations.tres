@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="SmartAnimationSet" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/Characters/npc/smart_animation_set.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+enter_source = "res://anim/sitting_enter_fit_anim_only.glb"
+enter_clip = &"sitting_enter_fit"
+loop_source = "res://anim/sitting_idle_loop_fit_anim_only.glb"
+loop_clip = &"sitting_idle_loop_fit"
+exit_source = "res://anim/sitting_exit_fit_anim_only.glb"
+exit_clip = &"sitting_exit_fit"
+xfade = 0.2
+enter_fade = 0.15

@@ -27,24 +27,30 @@ func _run() -> void:
 	var controller: BuildController = demo.get_node("BuildSystem/BuildController")
 
 	# --- Matematica de la grilla -----------------------------------------
+	# Las pruebas usan coordenadas relativas al nodo de la grilla para no
+	# depender de la posicion del BuildSystem dentro del nivel.
+	var base := grid.global_position
+	var plane_y := grid.plane_global_y()
+
 	_check(grid.cell_size == 1.0, "cell_size por defecto")
-	_check(grid.cell_from_world(Vector3(0.5, 0, 0.5)) == Vector2i(0, 0), "celda 0,0")
-	_check(grid.cell_from_world(Vector3(2.5, 0, 3.5)) == Vector2i(2, 3), "celda 2,3")
+	_check(grid.cell_from_world(base + Vector3(0.5, plane_y - base.y, 0.5)) == Vector2i(0, 0), "celda 0,0")
+	_check(grid.cell_from_world(base + Vector3(2.5, plane_y - base.y, 3.5)) == Vector2i(2, 3), "celda 2,3")
 	_check(grid.is_cell_inside(Vector2i(0, 0)), "celda 0,0 dentro")
 	_check(not grid.is_cell_inside(Vector2i(-1, 0)), "celda negativa fuera")
 	_check(not grid.is_cell_inside(Vector2i(grid.cells_x, 0)), "celda limite fuera")
 
 	var center := grid.cell_center(Vector2i(2, 3))
-	_check(center.x > 2.0 and center.x < 3.0, "centro X en la celda")
-	_check(center.z > 3.0 and center.z < 4.0, "centro Z en la celda")
+	_check(grid.cell_from_world(center) == Vector2i(2, 3), "centro en la celda")
+	_check(is_equal_approx(center.x, base.x + 2.5), "centro X en la celda")
+	_check(is_equal_approx(center.z, base.z + 3.5), "centro Z en la celda")
 
-	var wall := grid.wall_from_world(Vector3(2.1, 0, 3.5))
+	var wall := grid.wall_from_world(base + Vector3(2.1, plane_y - base.y, 3.5))
 	_check(wall == Vector3i(2, 3, 0), "borde izquierdo detectado")
-	wall = grid.wall_from_world(Vector3(2.9, 0, 3.5))
+	wall = grid.wall_from_world(base + Vector3(2.9, plane_y - base.y, 3.5))
 	_check(wall == Vector3i(3, 3, 0), "borde derecho detectado")
-	wall = grid.wall_from_world(Vector3(2.5, 0, 3.1))
+	wall = grid.wall_from_world(base + Vector3(2.5, plane_y - base.y, 3.1))
 	_check(wall == Vector3i(2, 3, 1), "borde inferior detectado")
-	wall = grid.wall_from_world(Vector3(2.5, 0, 3.9))
+	wall = grid.wall_from_world(base + Vector3(2.5, plane_y - base.y, 3.9))
 	_check(wall == Vector3i(2, 4, 1), "borde superior detectado")
 
 	# --- Colocacion ------------------------------------------------------

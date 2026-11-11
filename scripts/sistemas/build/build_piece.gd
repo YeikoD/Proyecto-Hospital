@@ -1,14 +1,18 @@
 class_name BuildPiece
 extends StaticBody3D
 
-## Pieza ya colocada (suelo o pared). El controlador le ajusta las dimensiones
-## segun la grilla, asi los prefabs pueden estar modelados en 1x1x1.
+## Pieza ya colocada (suelo, pared u objeto). El controlador le ajusta las
+## dimensiones segun la grilla, asi los prefabs pueden estar modelados en 1x1x1.
 
-## Celda que ocupa (solo suelos).
+## Celda que ocupa (suelos y objetos).
 var cell := Vector2i.ZERO
 ## Borde que ocupa (solo paredes).
 var wall_key := Vector3i.ZERO
 var is_wall := false
+## Identificador del BuildItem usado para crear la pieza (persistencia).
+var item_id: StringName = &""
+## Rotación en pasos de 90° (objetos).
+var object_rotation_steps: int = 0
 
 @onready var _mesh_instance: MeshInstance3D = get_node_or_null("MeshInstance3D")
 @onready var _collision: CollisionShape3D = get_node_or_null("CollisionShape3D")

@@ -1,17 +1,20 @@
-[gd_resource type="Resource" script_class="BuildItem" load_steps=3 format=3 uid="uid://furniture_chair_item"]
+[gd_resource type="Resource" script_class="BuildItem" load_steps=5 format=3 uid="uid://furniture_chair_item"]
 
 [ext_resource type="Script" path="res://scripts/sistemas/build/build_item.gd" id="1_script"]
 [ext_resource type="Texture2D" path="res://icon.svg" id="2_preview"]
+[ext_resource type="PackedScene" path="res://scripts/sistemas/smart_objects/prefabs/chair.tscn" id="3_scene"]
+[ext_resource type="Resource" path="res://data/smart_objects/seat.tres" id="4_smart"]
 
 [resource]
 script = ExtResource("1_script")
 id = &"furniture_chair"
-display_name = "Silla (próximamente)"
+display_name = "Silla"
 category = "objects"
 subcategory = "furniture"
 object_type = "furniture"
 preview = ExtResource("2_preview")
-scene = null
+scene = ExtResource("3_scene")
+smart_object = ExtResource("4_smart")
 footprint = Vector2i(1, 1)
 can_rotate = true
-notes = "Reservado para futura implementación de objetos."
+notes = "SmartObject: affordance 'sit'. Los NPC pueden reservar su slot y sentarse."

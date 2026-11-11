@@ -40,6 +40,11 @@ extends Resource
 ## Archivo de mapa (.map/.vmf) de FuncGodot que se construirá como pieza.
 @export_file("*.map", "*.vmf") var map_file: String = ""
 
+@export_group("Smart Object")
+## Definición de interacción del objeto (opcional). Si se asigna, la escena
+## debe tener raíz SmartObject para que la IA pueda reservar sus slots.
+@export var smart_object: SmartObjectDef
+
 ## Huella en celdas (para futuras piezas multi-celda).
 @export var footprint: Vector2i = Vector2i(1, 1)
 
@@ -51,9 +56,12 @@ extends Resource
 
 
 func is_placeable_now() -> bool:
-	# Por ahora el motor de colocación soporta suelo y pared.
+	# Tipos que el motor de colocación sabe instanciar en la grilla.
 	var has_source := scene != null or map_file != ""
-	return object_type in ["floor", "wall", "suelo", "pared"] and has_source
+	return object_type in [
+		"floor", "wall", "suelo", "pared",
+		"furniture", "prop", "mueble", "objeto",
+	] and has_source
 
 
 func normalized_category() -> String:

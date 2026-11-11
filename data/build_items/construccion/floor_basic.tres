@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="BuildItem" format=3 uid="uid://c27nmtir842uy"]
+
+[ext_resource type="Script" uid="uid://dd6mq4ip22kt6" path="res://scripts/sistemas/build/build_item.gd" id="1_script"]
+[ext_resource type="PackedScene" uid="uid://dgt8j7cidss3v" path="res://models/build/construccion/floor/floor_exterior_01.glb" id="2_2v1c3"]
+[ext_resource type="Texture2D" uid="uid://c4bwlescynher" path="res://icon.svg" id="2_preview"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"floor_basic"
+display_name = "Suelo Basico"
+subcategory = "floors"
+preview = ExtResource("2_preview")
+scene = ExtResource("2_2v1c3")
+notes = "Suelo estándar de 1 celda."

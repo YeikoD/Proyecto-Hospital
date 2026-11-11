@@ -8,3 +8,6 @@
 # Temporales generados por el sistema / addons
 *.TMP
 *~RF*
+
+# Partidas de construccion guardadas por nivel (BuildController)
+*.build.json

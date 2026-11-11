@@ -10,6 +10,9 @@ extends CharacterBody3D
 ## `wander_radius` y camina solo. Tambien acepta un AnimationController para
 ## animar idle / caminar segun la velocidad.
 
+## Se emite una sola vez cuando el NPC llega al destino de `move_to()`.
+signal arrived
+
 @export_group("Movimiento")
 @export var speed := 2.2
 @export var acceleration := 8.0
@@ -31,21 +34,28 @@ extends CharacterBody3D
 @export var visual_path: NodePath
 ## Opcional: controlador de animacion del personaje.
 @export var animation_controller_path: NodePath
+## Opcional: manager de secuencias de interaccion (enter/loop/exit + POI).
+@export var animation_manager_path: NodePath
 
 var _agent: NavigationAgent3D
 var _visual: Node3D
 var _anim: AnimationController
+var _anim_manager: NpcAnimationManager
 
 var _has_target := false
 var _nav_ready := false
 var _wait := 0.0
 var _target := Vector3.ZERO
+## Congelado = el cerebro lo controla (por ejemplo, mientras usa un objeto).
+## No se mueve ni se le aplica física, pero conserva su posición.
+var frozen := false
 
 
 func _ready() -> void:
 	_agent = _resolve_agent()
 	_visual = _resolve_visual()
 	_anim = _resolve_animation()
+	_anim_manager = _resolve_animation_manager()
 
 	if _agent != null:
 		_agent.path_desired_distance = 0.4
@@ -114,11 +124,93 @@ func get_target() -> Vector3:
 	return _target
 
 
+## Bloquea el movimiento sin sacar al NPC del árbol (mientras usa un objeto).
+func set_frozen(value: bool) -> void:
+	frozen = value
+	if frozen:
+		velocity = Vector3.ZERO
+
+
+## Gira el modelo visual hacia un punto del mundo, sin mover al NPC.
+func look_towards(world_position: Vector3) -> void:
+	if _visual == null:
+		return
+	var direction := world_position - global_position
+	direction.y = 0.0
+	if direction.length_squared() < 0.0001:
+		return
+	_visual.rotation.y = atan2(-direction.x, -direction.z)
+
+
+## Reproduce una animación de interacción sostenida, si existe.
+func play_interaction(animation: StringName) -> void:
+	if _anim != null and animation != StringName():
+		_anim.hold(animation)
+
+
+## Vuelve al locomotion tras una interacción.
+func stop_interaction() -> void:
+	if _anim != null:
+		_anim.release()
+
+
+## Manager de secuencias (enter/loop/exit). Puede ser null si el NPC no lo
+## tiene configurado.
+func get_animation_manager() -> NpcAnimationManager:
+	if _anim_manager == null or not is_instance_valid(_anim_manager):
+		_anim_manager = _resolve_animation_manager()
+	return _anim_manager
+
+
+## Atajo para sistemas externos: alinea al NPC al POI y reproduce la secuencia.
+func play_animation_sequence(
+	set: SmartAnimationSet,
+	poi: Transform3D,
+	exit_transform: Transform3D
+) -> bool:
+	var manager := get_animation_manager()
+	if manager == null:
+		return false
+	return manager.play_at(set, poi, exit_transform)
+
+
+func cancel_animation_sequence() -> void:
+	var manager := get_animation_manager()
+	if manager != null:
+		manager.cancel()
+
+
+## Coloca al NPC en un transform del mundo (posición + orientación visual).
+## Pensado para POIs: el CharacterBody no rota, gira el modelo igual que al
+## caminar. No llama move_and_slide: usar con el NPC congelado.
+func teleport_to(transform: Transform3D) -> void:
+	global_position = transform.origin
+	if _visual == null:
+		return
+	var forward := -transform.basis.z.normalized()
+	if forward.length_squared() < 0.0001:
+		return
+	_visual.rotation.y = atan2(-forward.x, -forward.z)
+
+
+## Activa o desactiva los colliders del NPC. Se difiere porque cambiar un
+## shape durante un callback de física lanza error.
+func set_collision_enabled(enabled: bool) -> void:
+	for child in get_children():
+		if child is CollisionShape3D:
+			child.set_deferred("disabled", not enabled)
+
+
 # --------------------------------------------------------------------------
 # Movimiento
 # --------------------------------------------------------------------------
 
 func _physics_process(delta: float) -> void:
+	if frozen:
+		velocity = Vector3.ZERO
+		_update_animation()
+		return
+
 	if not is_on_floor():
 		velocity.y -= gravity * delta
 
@@ -141,6 +233,7 @@ func _physics_process(delta: float) -> void:
 		_decelerate(delta)
 		move_and_slide()
 		_update_animation()
+		arrived.emit()
 		return
 
 	var next := _agent.get_next_path_position()
@@ -253,6 +346,24 @@ func _resolve_animation() -> AnimationController:
 		if node is AnimationController:
 			return node as AnimationController
 	return _find_anim(self)
+
+
+func _resolve_animation_manager() -> NpcAnimationManager:
+	if not animation_manager_path.is_empty():
+		var node := get_node_or_null(animation_manager_path)
+		if node is NpcAnimationManager:
+			return node as NpcAnimationManager
+	return _find_anim_manager(self)
+
+
+func _find_anim_manager(node: Node) -> NpcAnimationManager:
+	if node is NpcAnimationManager:
+		return node as NpcAnimationManager
+	for child in node.get_children():
+		var found := _find_anim_manager(child)
+		if found != null:
+			return found
+	return null
 
 
 func _find_anim(node: Node) -> AnimationController:
