@@ -11,6 +11,7 @@ extends Node3D
 ## que tenga un FPSPlayer.
 
 enum Tool { FLOOR, WALL, OBJECT, ERASE }
+enum EraseKind { ALL, FLOOR, WALL, OBJECT }
 
 ## Se emite cuando cambia el conjunto de piezas colocadas (colocar, borrar o
 ## limpiar). La navegación lo usa para rehornear el NavMesh con debounce.
@@ -22,19 +23,22 @@ signal object_removed(object: Node)
 const FLOOR_PREFAB := preload("res://scripts/sistemas/build/prefabs/floor_tile.tscn")
 const WALL_PREFAB := preload("res://scripts/sistemas/build/prefabs/wall_segment.tscn")
 const GHOST_SHADER := preload("res://scripts/sistemas/build/shaders/ghost.gdshader")
+## Variante sin test de profundidad: el rojo del borrador se ve sobre la pieza.
+const GHOST_ERASE_SHADER := preload("res://scripts/sistemas/build/shaders/ghost_erase.gdshader")
 ## Previsualizacion del pincel de pisos: plana, con borde y cuadricula por celda
 ## (a diferencia del holograma, que queda mejor para volumenes).
 const FLOOR_PREVIEW_SHADER := preload("res://scripts/sistemas/build/shaders/floor_preview.gdshader")
 const COLOR_OK := Color(0.25, 1.0, 0.6, 0.35)
 const COLOR_BAD := Color(1.0, 0.3, 0.25, 0.42)
-const COLOR_ERASE := Color(1.0, 0.45, 0.2, 0.5)
+## Rojo de borrado: mismo lenguaje visual que los borradores del menu.
+const COLOR_ERASE := Color(1.0, 0.3, 0.26, 0.5)
 
 ## Colores de la previsualizacion plana del piso (mas claros que el holograma
 ## para que se lean sobre el cesped y otros suelos claros).
 const FLOOR_PREVIEW_FILL := Color(0.25, 1.0, 0.62)
 const FLOOR_PREVIEW_LINE := Color(0.72, 1.0, 0.92)
-const FLOOR_ERASE_FILL := Color(1.0, 0.42, 0.18)
-const FLOOR_ERASE_LINE := Color(1.0, 0.72, 0.45)
+const FLOOR_ERASE_FILL := Color(1.0, 0.3, 0.26)
+const FLOOR_ERASE_LINE := Color(1.0, 0.62, 0.56)
 ## Altura de la previsualizacion de piso sobre el plano (por encima del suelo).
 const FLOOR_PREVIEW_LIFT := 0.09
 
@@ -51,6 +55,13 @@ const WALL_BUILD_TIME := 0.16
 const FLOOR_REVEAL_CELL_TIME := 0.04
 const FLOOR_BUILD_STAGGER := 0.018
 const FLOOR_BUILD_TIME := 0.14
+## Desmontaje al borrar: cada celda/tramo se encoge un poco después del anterior.
+const WALL_ERASE_STAGGER := 0.03
+const WALL_ERASE_TIME := 0.14
+const FLOOR_ERASE_STAGGER := 0.018
+const FLOOR_ERASE_TIME := 0.12
+const OBJECT_ERASE_STAGGER := 0.02
+const OBJECT_ERASE_TIME := 0.12
 
 @export var grid: BuildGrid
 @export var build_camera: BuildCamera
@@ -79,6 +90,7 @@ const FLOOR_BUILD_TIME := 0.14
 
 var build_mode := false
 var tool: Tool = Tool.FLOOR
+var erase_kind: EraseKind = EraseKind.ALL
 
 var _floors: Dictionary = {}
 var _walls: Dictionary = {}
@@ -113,6 +125,8 @@ var _wall_ghost_model: Node3D
 var _wall_ghost_material: ShaderMaterial
 var _wall_ghost_aabb := AABB()
 var _wall_ghost_scene: PackedScene
+## Si el fantasma actual usa la variante de borrado (sin test de profundidad).
+var _wall_ghost_erasing := false
 ## Desfase vertical del origen del modelo (las cajas procedurales se centran).
 var _wall_ghost_base_offset := 0.0
 
@@ -122,17 +136,23 @@ var _object_ghost_material: ShaderMaterial
 var _object_ghost_aabb := AABB()
 var _object_ghost_scene: PackedScene
 var _object_ghost_footprint := Vector2i(1, 1)
+## Si el fantasma actual usa la variante de borrado (sin test de profundidad).
+var _object_ghost_erasing := false
 
 var _hover_cell := Vector2i.ZERO
 var _hover_wall := Vector3i.ZERO
 var _hovering := false
 var _painting := false
 var _floor_dragging := false
+## true = el arrastre actual borra pisos en vez de construirlos.
+var _floor_drag_erasing := false
 var _floor_drag_start := Vector2i.ZERO
 var _floor_drag_cells: Array[Vector2i] = []
 ## Progreso del "pintado" del rectangulo, en celdas completas.
 var _floor_drag_reveal := 0.0
 var _wall_dragging := false
+## true = el arrastre actual borra paredes en vez de construirlas.
+var _wall_drag_erasing := false
 var _wall_drag_start := Vector3i.ZERO
 var _wall_drag_start_cell := Vector2i.ZERO
 var _wall_drag_ghosts: Array[Node3D] = []
@@ -255,10 +275,7 @@ func exit_build_mode() -> void:
 	set_process(false)
 	_painting = false
 	_hovering = false
-	_clear_wall_drag_ghosts()
-	_wall_dragging = false
-	_clear_floor_drag_preview()
-	_floor_dragging = false
+	_cancel_drags()
 	_hide_ghosts()
 
 	if build_camera != null:
@@ -282,14 +299,22 @@ func exit_build_mode() -> void:
 
 func set_tool(new_tool: Tool) -> void:
 	# Cambiar de herramienta cancela cualquier arrastre en curso.
-	if new_tool != Tool.WALL and _wall_dragging:
-		_clear_wall_drag_ghosts()
-		_wall_dragging = false
-	if new_tool != Tool.FLOOR and _floor_dragging:
-		_clear_floor_drag_preview()
-		_floor_dragging = false
+	if new_tool != tool:
+		_cancel_drags()
 	tool = new_tool
 	_update_ui()
+
+
+## Cancela los arrastres de pared y piso y limpia sus previsualizaciones.
+func _cancel_drags() -> void:
+	if _wall_dragging:
+		_clear_wall_drag_ghosts()
+		_wall_dragging = false
+	_wall_drag_erasing = false
+	if _floor_dragging:
+		_clear_floor_drag_preview()
+		_floor_dragging = false
+	_floor_drag_erasing = false
 
 
 # --------------------------------------------------------------------------
@@ -342,6 +367,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		set_tool(Tool.WALL)
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed("build_tool_erase"):
+		erase_kind = EraseKind.ALL
 		set_tool(Tool.ERASE)
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed("build_rotate") and tool == Tool.OBJECT:
@@ -354,10 +380,12 @@ func _process(_delta: float) -> void:
 		return
 
 	_hovering = _update_hover()
+	var pressed := Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
+	var over_ui := get_viewport().gui_get_hovered_control() != null
 
-	# Permitir terminar un arrastre de paredes aunque el cursor salga de la grilla.
-	if tool == Tool.WALL and _wall_dragging:
-		if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+	# Permitir terminar un arrastre aunque el cursor salga de la grilla.
+	if _wall_dragging:
+		if pressed:
 			if _hovering:
 				_update_wall_drag(_delta)
 		else:
@@ -366,9 +394,8 @@ func _process(_delta: float) -> void:
 			_update_ui()
 			return
 
-	# Lo mismo para el pincel de pisos.
-	if tool == Tool.FLOOR and _floor_dragging:
-		if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+	if _floor_dragging:
+		if pressed:
 			if _hovering:
 				_update_floor_drag(_delta)
 		else:
@@ -384,15 +411,14 @@ func _process(_delta: float) -> void:
 		return
 
 	if tool == Tool.WALL:
-		if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+		if pressed:
 			if not _wall_dragging:
 				_start_wall_drag()
 			if _wall_dragging:
 				_update_wall_drag(_delta)
 	elif tool == Tool.FLOOR:
 		# Clic y arrastrar: rectangulo de celdas con vista previa progresiva.
-		if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
-			var over_ui := get_viewport().gui_get_hovered_control() != null
+		if pressed:
 			if not _floor_dragging and not over_ui:
 				_start_floor_drag()
 			if _floor_dragging:
@@ -400,14 +426,28 @@ func _process(_delta: float) -> void:
 	elif tool == Tool.OBJECT:
 		# Un clic = un objeto. Arrastrar no debe llenar la sala de muebles.
 		# Ignorar clics sobre la UI (menú de items).
-		var pressed := Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
-		var over_ui := get_viewport().gui_get_hovered_control() != null
 		if pressed and not _painting and not over_ui:
 			_apply_tool()
 		_painting = pressed
+	elif tool == Tool.ERASE and erase_kind == EraseKind.FLOOR:
+		# Borrador de piso: igual que construir, pero el rectangulo elimina.
+		if pressed:
+			if not _floor_dragging and not over_ui:
+				_start_floor_drag(true)
+			if _floor_dragging:
+				_update_floor_drag(_delta)
+		_painting = pressed
+	elif tool == Tool.ERASE and erase_kind == EraseKind.WALL:
+		# Borrador de pared: arrastre en linea recta, como el pincel de paredes.
+		if pressed:
+			if not _wall_dragging and not over_ui:
+				_start_wall_drag(true)
+			if _wall_dragging:
+				_update_wall_drag(_delta)
+		_painting = pressed
 	else:
-		# ERASE: pintar borrando celda a celda.
-		_painting = Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
+		# Borrado de objetos o generico: pintar mientras se mantiene pulsado.
+		_painting = pressed
 		if _painting:
 			_apply_tool()
 
@@ -519,8 +559,8 @@ func place_object_item(
 
 
 ## Borra por API respetando la prioridad de la herramienta (pared, luego suelo).
-func erase_at(cell: Vector2i, wall: Vector3i) -> bool:
-	return _erase_at(cell, wall)
+func erase_at(cell: Vector2i, wall: Vector3i, kind: EraseKind = EraseKind.ALL) -> bool:
+	return _erase_at(cell, wall, kind)
 
 
 func _apply_tool() -> void:
@@ -533,7 +573,7 @@ func _apply_tool() -> void:
 			if _selected_object_item != null:
 				_place_object(_hover_cell, _selected_object_item, _object_rotation)
 		Tool.ERASE:
-			_erase_at(_hover_cell, _hover_wall)
+			_erase_at(_hover_cell, _hover_wall, erase_kind)
 
 
 func _can_place_floor(cell: Vector2i) -> bool:
@@ -640,10 +680,11 @@ func _place_wall_silent(key: Vector3i) -> bool:
 # Arrastre de paredes (estilo Sims): clic y arrastrar para crear varios tramos.
 # --------------------------------------------------------------------------
 
-func _start_wall_drag() -> void:
+func _start_wall_drag(erasing: bool = false) -> void:
 	if not _hovering:
 		return
 	_wall_dragging = true
+	_wall_drag_erasing = erasing
 	_wall_drag_start = _hover_wall
 	_wall_drag_start_cell = _hover_cell
 	_wall_drag_reveal = 0.0
@@ -654,14 +695,18 @@ func _start_wall_drag() -> void:
 func _update_wall_drag(delta: float = 0.0) -> void:
 	if not _hovering:
 		return
-	if delta > 0.0:
-		_wall_drag_reveal += delta / WALL_REVEAL_SEGMENT_TIME
 
 	var keys := _wall_drag_segment_keys()
-	# Si el arrastre se alarga, el tramo nuevo empieza a construirse desde cero.
-	if keys.size() > _wall_drag_keys.size():
-		_wall_drag_reveal = minf(_wall_drag_reveal, float(_wall_drag_keys.size()))
-	_wall_drag_reveal = minf(_wall_drag_reveal, float(keys.size()))
+	if _wall_drag_erasing:
+		# Al borrar se muestra toda la linea de inmediato.
+		_wall_drag_reveal = float(keys.size())
+	else:
+		if delta > 0.0:
+			_wall_drag_reveal += delta / WALL_REVEAL_SEGMENT_TIME
+		# Si el arrastre se alarga, el tramo nuevo empieza a construirse desde cero.
+		if keys.size() > _wall_drag_keys.size():
+			_wall_drag_reveal = minf(_wall_drag_reveal, float(_wall_drag_keys.size()))
+		_wall_drag_reveal = minf(_wall_drag_reveal, float(keys.size()))
 
 	if not _same_wall_keys(keys, _wall_drag_keys):
 		_rebuild_wall_drag_ghosts(keys)
@@ -725,7 +770,7 @@ func _rebuild_wall_drag_ghosts(keys: Array[Vector3i]) -> void:
 			extra.queue_free()
 
 	while _wall_drag_ghosts.size() < keys.size():
-		var built := _build_wall_ghost_visual()
+		var built := _build_wall_ghost_visual(_wall_drag_erasing)
 		if built.is_empty():
 			break
 		if _wall_drag_local_aabb.size == Vector3.ZERO:
@@ -754,15 +799,18 @@ func _update_wall_drag_ghosts(keys: Array[Vector3i]) -> void:
 		var mat := _wall_drag_ghost_materials[i]
 		if not is_instance_valid(ghost):
 			continue
+		var key := keys[i]
+		var exists := _walls.has(key)
 		var t := clampf(progress - float(i), 0.0, 1.0)
-		ghost.visible = t > 0.0
+		# Al borrar solo se resaltan las paredes que existen de verdad.
+		ghost.visible = t > 0.0 and (not _wall_drag_erasing or exists)
 		if not ghost.visible:
 			continue
-		var key := keys[i]
 		ghost.global_transform = _wall_ghost_transform(key, _wall_drag_base_offset)
 		_update_ghost_material(
 			mat, ghost, _wall_drag_local_aabb,
-			_can_place_wall(key), false,
+			exists if _wall_drag_erasing else _can_place_wall(key),
+			_wall_drag_erasing,
 			GHOST_CURRENT_STRENGTH if i == current else GHOST_PREVIEW_STRENGTH,
 			t
 		)
@@ -781,6 +829,23 @@ func _clear_wall_drag_ghosts(reset_reveal: bool = true) -> void:
 
 func _finish_wall_drag() -> void:
 	var keys := _wall_drag_segment_keys()
+
+	if _wall_drag_erasing:
+		var erased := false
+		var order := 0
+		for key in keys:
+			if _erase_wall_at(key, true, order):
+				erased = true
+				order += 1
+		if erased:
+			_refresh_wall_variants()
+			_refresh_wall_shapes()
+			pieces_changed.emit()
+		_clear_wall_drag_ghosts()
+		_wall_dragging = false
+		_wall_drag_erasing = false
+		return
+
 	var placed := false
 	for key in keys:
 		if _place_wall_silent(key):
@@ -792,16 +857,18 @@ func _finish_wall_drag() -> void:
 		pieces_changed.emit()
 	_clear_wall_drag_ghosts()
 	_wall_dragging = false
+	_wall_drag_erasing = false
 
 
 # --------------------------------------------------------------------------
 # Pincel de pisos (estilo Sims): clic y arrastrar para rellenar un rectangulo.
 # --------------------------------------------------------------------------
 
-func _start_floor_drag() -> void:
+func _start_floor_drag(erasing: bool = false) -> void:
 	if not _hovering or not grid.is_cell_inside(_hover_cell):
 		return
 	_floor_dragging = true
+	_floor_drag_erasing = erasing
 	_floor_drag_start = _hover_cell
 	_floor_drag_reveal = 0.0
 	_clear_floor_drag_preview(false)
@@ -811,20 +878,24 @@ func _start_floor_drag() -> void:
 func _update_floor_drag(delta: float = 0.0) -> void:
 	if not _hovering:
 		return
-	if delta > 0.0:
-		_floor_drag_reveal += delta / FLOOR_REVEAL_CELL_TIME
 
 	var cells := _floor_drag_rect_cells()
-	# Si el rectangulo crece, las celdas nuevas empiezan a pintarse desde cero.
-	if not _same_floor_cells(cells, _floor_drag_cells):
-		if cells.size() > _floor_drag_cells.size():
-			_floor_drag_reveal = minf(_floor_drag_reveal, float(_floor_drag_cells.size()))
-		_floor_drag_cells = cells.duplicate()
-	_floor_drag_reveal = minf(_floor_drag_reveal, float(cells.size()))
+	if _floor_drag_erasing:
+		# Al borrar se resalta todo el rectangulo de inmediato.
+		_floor_drag_reveal = float(cells.size())
+	else:
+		if delta > 0.0:
+			_floor_drag_reveal += delta / FLOOR_REVEAL_CELL_TIME
+		# Si el rectangulo crece, las celdas nuevas empiezan a pintarse desde cero.
+		if not _same_floor_cells(cells, _floor_drag_cells):
+			if cells.size() > _floor_drag_cells.size():
+				_floor_drag_reveal = minf(_floor_drag_reveal, float(_floor_drag_cells.size()))
+			_floor_drag_cells = cells.duplicate()
+		_floor_drag_reveal = minf(_floor_drag_reveal, float(cells.size()))
 
 	if not _same_floor_cells(cells, _floor_preview_cells):
-		_rebuild_floor_preview(cells, _floor_drag_start, false)
-	_update_floor_preview(cells, _floor_drag_reveal, false)
+		_rebuild_floor_preview(cells, _floor_drag_start, _floor_drag_erasing)
+	_update_floor_preview(cells, _floor_drag_reveal, _floor_drag_erasing)
 
 
 ## Celdas del rectangulo definido por el primer clic y el cursor, en orden de
@@ -973,6 +1044,21 @@ func _clear_floor_drag_preview(reset_reveal: bool = true) -> void:
 
 func _finish_floor_drag() -> void:
 	var cells := _floor_drag_rect_cells()
+
+	if _floor_drag_erasing:
+		var erased := false
+		var order := 0
+		for cell in cells:
+			if _erase_floor_at(cell, true, order):
+				erased = true
+				order += 1
+		if erased:
+			pieces_changed.emit()
+		_clear_floor_drag_preview()
+		_floor_dragging = false
+		_floor_drag_erasing = false
+		return
+
 	var placed: Array[Vector2i] = []
 	for cell in cells:
 		if _place_floor(cell, true):
@@ -982,27 +1068,71 @@ func _finish_floor_drag() -> void:
 		pieces_changed.emit()
 	_clear_floor_drag_preview()
 	_floor_dragging = false
+	_floor_drag_erasing = false
 
 
-func _erase_at(cell: Vector2i, wall: Vector3i) -> bool:
-	if _object_cells.has(cell):
-		_erase_object_at(cell)
-		pieces_changed.emit()
-		return true
-	if _walls.has(wall):
-		_remove(_walls, wall)
+func _erase_at(
+	cell: Vector2i, wall: Vector3i, kind: EraseKind = EraseKind.ALL
+) -> bool:
+	match kind:
+		EraseKind.OBJECT:
+			if _object_cells.has(cell):
+				_erase_object_at(cell)
+				pieces_changed.emit()
+				return true
+			return false
+		EraseKind.WALL:
+			return _erase_wall_at(wall)
+		EraseKind.FLOOR:
+			return _erase_floor_at(cell)
+		_:
+			if _object_cells.has(cell):
+				_erase_object_at(cell)
+				pieces_changed.emit()
+				return true
+			if _erase_wall_at(wall):
+				return true
+			return _erase_floor_at(cell)
+
+
+## Borra un tramo de pared con animación de desmontaje. `silent` evita
+## refrescos/señales por cada pieza al borrar en lote (el llamador hace un único
+## refresco al final). `order` escalona la animación.
+func _erase_wall_at(
+	wall: Vector3i, silent: bool = false, order: int = 0
+) -> bool:
+	if not _walls.has(wall):
+		return false
+	var piece := _walls.get(wall) as BuildPiece
+	_walls.erase(wall)
+	if piece != null and is_instance_valid(piece):
+		_disable_piece_collision(piece)
+		_animate_wall_erase(piece, order)
+	if not silent:
 		_refresh_wall_variants()
 		_refresh_wall_shapes()
 		pieces_changed.emit()
-		return true
-	if _floors.has(cell):
-		_remove(_floors, cell)
+	return true
+
+
+## Borra un piso con animación de desmontaje. `silent` evita señales por cada
+## celda al borrar en lote. `order` escalona la animación.
+func _erase_floor_at(
+	cell: Vector2i, silent: bool = false, order: int = 0
+) -> bool:
+	if not _floors.has(cell):
+		return false
+	var piece := _floors.get(cell) as BuildPiece
+	_floors.erase(cell)
+	if piece != null and is_instance_valid(piece):
+		_disable_piece_collision(piece)
+		_animate_floor_erase(piece, order)
+	if not silent:
 		pieces_changed.emit()
-		return true
-	return false
+	return true
 
 
-func _erase_object_at(cell: Vector2i) -> void:
+func _erase_object_at(cell: Vector2i, order: int = 0) -> void:
 	if not _object_cells.has(cell):
 		return
 	var piece = _object_cells[cell]
@@ -1017,16 +1147,29 @@ func _erase_object_at(cell: Vector2i) -> void:
 
 	if is_instance_valid(piece):
 		if piece is SmartObject:
-			(piece as SmartObject).release_all()
+			var smart := piece as SmartObject
+			smart.release_all()
+			# La pieza sigue viva mientras dura la animación, pero debe dejar de
+			# existir para la IA en el mismo instante en que se borra.
+			SmartObjectRegistry.unregister(smart)
+			smart.remove_from_group("smart_objects")
 		object_removed.emit(piece)
-		piece.queue_free()
+		_disable_piece_collision(piece)
+		_animate_object_erase(piece, order)
 
 
-func _remove(collection: Dictionary, key: Variant) -> void:
-	var piece: Node = collection.get(key)
-	if piece != null:
-		piece.queue_free()
-	collection.erase(key)
+## Desactiva la colisión de una pieza que está saliendo para que el NavMesh no
+## la siga considerando mientras dura la animación.
+func _disable_piece_collision(piece: Node) -> void:
+	if piece is CollisionObject3D:
+		(piece as CollisionObject3D).collision_layer = 0
+		(piece as CollisionObject3D).collision_mask = 0
+	var pending: Array[Node] = piece.get_children()
+	while not pending.is_empty():
+		var node: Node = pending.pop_back()
+		if node is CollisionShape3D:
+			(node as CollisionShape3D).set_deferred("disabled", true)
+		pending.append_array(node.get_children())
 
 
 func _load_build_items() -> void:
@@ -1059,6 +1202,8 @@ func _on_build_item_selected(item: BuildItem) -> void:
 func _apply_selected_item() -> void:
 	if selected_item == null:
 		return
+	# Elegir otro item (p. ej. otro borrador) no debe dejar a medias el arrastre.
+	_cancel_drags()
 	var scene := selected_item.scene
 	_active_map_file = selected_item.map_file
 	_selected_object_item = null
@@ -1079,6 +1224,15 @@ func _apply_selected_item() -> void:
 		"furniture", "prop", "mueble", "objeto":
 			tool = Tool.OBJECT
 			_selected_object_item = selected_item
+		"erase_floor":
+			erase_kind = EraseKind.FLOOR
+			tool = Tool.ERASE
+		"erase_wall":
+			erase_kind = EraseKind.WALL
+			tool = Tool.ERASE
+		"erase_object":
+			erase_kind = EraseKind.OBJECT
+			tool = Tool.ERASE
 		_:
 			# Tipos aún no colocables (techo, aberturas, ...).
 			pass
@@ -1698,12 +1852,13 @@ func _update_hover() -> bool:
 func _update_ghosts() -> void:
 	# El arrastre de pisos mantiene su propia previsualizacion persistente:
 	# no hay que ocultarla en cada frame.
-	if tool == Tool.FLOOR and _floor_dragging:
+	if _floor_dragging:
 		return
 	_hide_ghosts()
 	if not _hovering:
 		return
-	if tool == Tool.WALL and _wall_dragging:
+	# Los fantasmas del arrastre de paredes son nodos aparte; el hover se oculta.
+	if _wall_dragging:
 		return
 
 	match tool:
@@ -1716,12 +1871,21 @@ func _update_ghosts() -> void:
 			_show_object_ghost(grid.clamp_cell(_hover_cell),
 				_can_place_object(_hover_cell, _selected_object_item), false)
 		Tool.ERASE:
-			if _object_cells.has(_hover_cell):
-				_show_object_ghost(grid.clamp_cell(_hover_cell), true, true)
-			elif _walls.has(_hover_wall):
-				_show_wall_ghost(_hover_wall, true, true)
-			else:
-				_show_floor_preview(grid.clamp_cell(_hover_cell), true)
+			match erase_kind:
+				EraseKind.OBJECT:
+					_show_object_ghost(grid.clamp_cell(_hover_cell),
+						_object_cells.has(_hover_cell), true)
+				EraseKind.WALL:
+					_show_wall_ghost(_hover_wall, _walls.has(_hover_wall), true)
+				EraseKind.FLOOR:
+					_show_floor_preview(grid.clamp_cell(_hover_cell), true)
+				_:
+					if _object_cells.has(_hover_cell):
+						_show_object_ghost(grid.clamp_cell(_hover_cell), true, true)
+					elif _walls.has(_hover_wall):
+						_show_wall_ghost(_hover_wall, true, true)
+					else:
+						_show_floor_preview(grid.clamp_cell(_hover_cell), true)
 
 
 ## Previsualizacion de una sola celda (cursor quieto o herramienta de borrar).
@@ -1737,8 +1901,9 @@ func _show_floor_preview(cell: Vector2i, erasing: bool) -> void:
 func _show_wall_ghost(key: Vector3i, valid: bool, erasing: bool) -> void:
 	if _wall_ghost == null:
 		return
-	if _wall_ghost_model == null or _wall_ghost_scene != wall_scene:
-		_rebuild_wall_ghost_model()
+	if _wall_ghost_model == null or _wall_ghost_scene != wall_scene \
+			or _wall_ghost_erasing != erasing:
+		_rebuild_wall_ghost_model(erasing)
 	if _wall_ghost_model == null or _wall_ghost_material == null:
 		return
 	_wall_ghost.visible = true
@@ -1816,8 +1981,9 @@ func _show_object_ghost(cell: Vector2i, valid: bool, erasing: bool) -> void:
 		)
 
 	if _object_ghost_model == null or _object_ghost_scene != scene \
-			or _object_ghost_footprint != footprint:
-		_rebuild_object_ghost_model(scene, footprint)
+			or _object_ghost_footprint != footprint \
+			or _object_ghost_erasing != erasing:
+		_rebuild_object_ghost_model(scene, footprint, erasing)
 	if _object_ghost_model == null or _object_ghost_material == null:
 		return
 
@@ -1912,7 +2078,7 @@ func _create_ghosts() -> void:
 
 ## Reconstruye el fantasma con la malla real de la pared seleccionada. Antes
 ## era una caja generica, que quedaba desfasada respecto del modelo colocado.
-func _rebuild_wall_ghost_model() -> void:
+func _rebuild_wall_ghost_model(erasing: bool = false) -> void:
 	if _wall_ghost == null:
 		return
 	if _wall_ghost_model != null:
@@ -1924,8 +2090,9 @@ func _rebuild_wall_ghost_model() -> void:
 	_wall_ghost_aabb = AABB()
 	_wall_ghost_base_offset = 0.0
 	_wall_ghost_scene = wall_scene
+	_wall_ghost_erasing = erasing
 
-	var built := _build_wall_ghost_visual()
+	var built := _build_wall_ghost_visual(erasing)
 	if built.is_empty():
 		return
 	_wall_ghost_model = built["root"]
@@ -1938,9 +2105,9 @@ func _rebuild_wall_ghost_model() -> void:
 
 ## Instancia el modelo de pared (o una caja de respaldo) y le aplica el shader
 ## fantasma a todas sus mallas. Devuelve root, material, AABB local y desfase.
-func _build_wall_ghost_visual() -> Dictionary:
+func _build_wall_ghost_visual(erasing: bool = false) -> Dictionary:
 	var mat := ShaderMaterial.new()
-	mat.shader = GHOST_SHADER
+	mat.shader = GHOST_ERASE_SHADER if erasing else GHOST_SHADER
 
 	var container := Node3D.new()
 	container.name = "WallGhostModel"
@@ -1994,7 +2161,9 @@ func _make_ghost_box_wall() -> Node3D:
 
 ## Reconstruye el fantasma del objeto con la malla real de su modelo. Si no hay
 ## escena (o no es 3D) cae en una caja ajustada a la huella del item.
-func _rebuild_object_ghost_model(scene: PackedScene, footprint: Vector2i) -> void:
+func _rebuild_object_ghost_model(
+	scene: PackedScene, footprint: Vector2i, erasing: bool = false
+) -> void:
 	if _object_ghost == null:
 		return
 	if _object_ghost_model != null:
@@ -2006,8 +2175,9 @@ func _rebuild_object_ghost_model(scene: PackedScene, footprint: Vector2i) -> voi
 	_object_ghost_aabb = AABB()
 	_object_ghost_scene = scene
 	_object_ghost_footprint = footprint
+	_object_ghost_erasing = erasing
 
-	var built := _build_object_ghost_visual(scene, footprint)
+	var built := _build_object_ghost_visual(scene, footprint, erasing)
 	if built.is_empty():
 		return
 	_object_ghost_model = built["root"]
@@ -2018,9 +2188,11 @@ func _rebuild_object_ghost_model(scene: PackedScene, footprint: Vector2i) -> voi
 
 
 ## Instancia el modelo del objeto y le aplica el mismo shader que a las paredes.
-func _build_object_ghost_visual(scene: PackedScene, footprint: Vector2i) -> Dictionary:
+func _build_object_ghost_visual(
+	scene: PackedScene, footprint: Vector2i, erasing: bool = false
+) -> Dictionary:
 	var mat := ShaderMaterial.new()
-	mat.shader = GHOST_SHADER
+	mat.shader = GHOST_ERASE_SHADER if erasing else GHOST_SHADER
 
 	var container := Node3D.new()
 	container.name = "ObjectGhostModel"
@@ -2168,6 +2340,61 @@ func _animate_floor_visual(visual: Node3D, order: int) -> void:
 		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 
 
+## Desmontaje de una pared: se hunde en el suelo (escala Y a 0) después de un
+## pequeño retardo, como el efecto de obra pero al revés.
+func _animate_wall_erase(piece: BuildPiece, order: int) -> void:
+	var visual := _piece_visual_node(piece)
+	var tween := create_tween()
+	tween.bind_node(piece)
+	tween.tween_interval(float(order) * WALL_ERASE_STAGGER)
+	if visual == null:
+		tween.tween_interval(WALL_ERASE_TIME)
+	else:
+		var is_box := visual is MeshInstance3D \
+			and (visual as MeshInstance3D).mesh is BoxMesh
+		tween.tween_property(visual, "scale:y", 0.001, WALL_ERASE_TIME) \
+			.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+		if is_box:
+			tween.parallel().tween_property(
+				visual, "position:y",
+				visual.position.y - wall_height * 0.5, WALL_ERASE_TIME
+			).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	tween.tween_callback(_free_piece.bind(piece))
+
+
+## Desmontaje de un piso: se encoge en el plano hasta desaparecer.
+func _animate_floor_erase(piece: BuildPiece, order: int) -> void:
+	var visual := _piece_visual_node(piece)
+	var tween := create_tween()
+	tween.bind_node(piece)
+	tween.tween_interval(float(order) * FLOOR_ERASE_STAGGER)
+	if visual == null:
+		tween.tween_interval(FLOOR_ERASE_TIME)
+	else:
+		var original := visual.scale
+		var target := Vector3(original.x * 0.01, original.y, original.z * 0.01)
+		tween.tween_property(visual, "scale", target, FLOOR_ERASE_TIME) \
+			.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	tween.tween_callback(_free_piece.bind(piece))
+
+
+## Desmontaje de un objeto: se encoge completo desde su base.
+func _animate_object_erase(piece: Node3D, order: int = 0) -> void:
+	var tween := create_tween()
+	tween.bind_node(piece)
+	tween.tween_interval(float(order) * OBJECT_ERASE_STAGGER)
+	var original := piece.scale
+	var target := Vector3(original.x * 0.01, original.y * 0.01, original.z * 0.01)
+	tween.tween_property(piece, "scale", target, OBJECT_ERASE_TIME) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	tween.tween_callback(_free_piece.bind(piece))
+
+
+func _free_piece(piece: Node) -> void:
+	if is_instance_valid(piece):
+		piece.queue_free()
+
+
 func _create_ui() -> void:
 	_ui_layer = CanvasLayer.new()
 	_ui_layer.name = "BuildUI"
@@ -2184,7 +2411,7 @@ func _create_ui() -> void:
 
 	var hint := _make_label(
 		"WASD: mover cámara   ·   clic derecho: orbitar   ·   rueda: zoom   ·   Q/E: altura\n"
-		+ "1: suelo   ·   2: pared   ·   3: borrar   ·   M: menú   ·   R: rotar   ·   ° / Ctrl+S: guardar   ·   B / Esc: salir",
+		+ "1: suelo   ·   2: pared   ·   3: borrar   ·   M: menú (Construir)   ·   R: rotar   ·   ° / Ctrl+S: guardar   ·   B / Esc: salir",
 		15, Color(0.85, 0.9, 0.95, 0.9)
 	)
 	hint.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
@@ -2239,6 +2466,8 @@ func _update_ui() -> void:
 
 
 func _tool_name() -> String:
+	if selected_item != null and selected_item.display_name != "":
+		return "Herramienta: %s" % selected_item.display_name
 	match tool:
 		Tool.FLOOR:
 			return "Herramienta: suelo"
@@ -2249,7 +2478,15 @@ func _tool_name() -> String:
 				return "Herramienta: objeto (%s)" % _selected_object_item.display_name
 			return "Herramienta: objeto"
 		Tool.ERASE:
-			return "Herramienta: borrar"
+			match erase_kind:
+				EraseKind.FLOOR:
+					return "Herramienta: borrar piso"
+				EraseKind.WALL:
+					return "Herramienta: borrar pared"
+				EraseKind.OBJECT:
+					return "Herramienta: borrar objeto"
+				_:
+					return "Herramienta: borrar"
 	return ""
 
 

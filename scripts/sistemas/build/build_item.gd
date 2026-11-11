@@ -26,6 +26,10 @@ extends Resource
 ## Imagen de previsualización para la lista.
 @export var preview: Texture2D
 
+## Tinte de la previsualización. Los borradores lo usan en rojo para indicar
+## que la acción elimina la pieza en vez de colocarla.
+@export var preview_tint: Color = Color.WHITE
+
 ## Escena 3D del item (debe ser o contener un BuildPiece cuando sea construible).
 @export var scene: PackedScene
 
@@ -58,6 +62,8 @@ extends Resource
 func is_placeable_now() -> bool:
 	# Tipos que el motor de colocación sabe instanciar en la grilla.
 	var has_source := scene != null or map_file != ""
+	if object_type in ["erase_floor", "erase_wall", "erase_object"]:
+		return true
 	return object_type in [
 		"floor", "wall", "suelo", "pared",
 		"furniture", "prop", "mueble", "objeto",

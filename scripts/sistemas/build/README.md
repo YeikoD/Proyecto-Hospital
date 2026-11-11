@@ -32,17 +32,53 @@ Godot.exe --path . res://scenes/demo/nav_demo.tscn
 | Entrada | Acción |
 | --- | --- |
 | `B` | Entrar / salir del modo construcción |
-| `1` | Herramienta suelo |
-| `2` | Herramienta pared |
-| `3` | Herramienta borrar |
+| `M` | Abrir / cerrar el menú **Construir** |
+| `1` | Herramienta suelo (atajo) |
+| `2` | Herramienta pared (atajo) |
+| `3` | Borrado general (atajo) |
 | Clic izquierdo | Colocar / borrar (arrastrar pinta varias celdas) |
-| Clic izquierdo + arrastrar (pared) | Dibuja una linea recta de paredes entre dos puntos |
+| Clic izquierdo + arrastrar (pared) | Dibuja una línea recta de paredes entre dos puntos |
+| Clic izquierdo + arrastrar (piso) | Dibuja un rectángulo de pisos entre dos esquinas |
+| Clic izquierdo + arrastrar (borrador de pared) | Borra una línea de paredes entre dos puntos |
+| Clic izquierdo + arrastrar (borrador de piso) | Borra un rectángulo de pisos entre dos esquinas |
 | Clic derecho / central + arrastrar | Orbitar la cámara |
 | Rueda | Zoom |
 | `WASD` | Desplazar la cámara |
 | `Q` / `E` | Bajar / subir el foco de la cámara |
+| `R` | Rotar objeto (herramienta de objetos) |
 | `°` / `Ctrl+S` | Guardar la construcción del nivel |
 | `Esc` | Salir del modo construcción |
+
+## Menú
+
+El menú se abre con `M`. Está organizado en pestañas para dejar clara la función
+de cada sección:
+
+- **Construir**: obra y acabados de la estructura.
+  - **Base**: pared, piso y sus borradores juntos (pared básica, suelo básico,
+    borrador de pared y borrador de piso).
+  - **Pinturas** *(futuro)*: pinturas/materiales para cambiar el aspecto de las
+    paredes ya construidas desde **Base**.
+  - **Baldosas** *(futuro)*: pinturas/materiales para cambiar el aspecto de los
+    suelos ya construidos desde **Base**.
+  - **Aberturas**: reservado (puertas, etc.).
+- **Objetos** *(pestaña independiente de Construir)*: muebles/props colocables
+  y sus herramientas (por ejemplo la silla y el borrador de objetos).
+
+Los borradores son ítems del menú (no una herramienta global): cada uno elimina
+solo su tipo. El atajo `3` sigue disponible como borrado general.
+
+Los borradores de **pared** y **piso** funcionan con el mismo gesto que sus
+pinceles de construcción: clic y arrastrar muestra en rojo lo que se va a
+eliminar (línea de paredes o rectángulo de pisos) y, al soltar, se borra todo de
+golpe. Así no hay que ir pieza por pieza. El borrador de objetos elimina los
+objetos que va tocando el cursor mientras se mantiene pulsado.
+
+El borrado tiene una **animación de desmontaje**: cada pared se hunde en el
+suelo y cada piso se encoge en el plano, escalonados en el orden del trazado
+(como el efecto de obra pero al revés). La colisión de cada pieza se desactiva
+al instante para que el NavMesh no la tenga en cuenta mientras termina la
+animación.
 
 ## Integrarlo en una escena
 
@@ -210,6 +246,9 @@ previsualización plana propia (ver abajo).
 
 - `shaders/ghost.gdshader` aplica el aspecto holográfico (borde Fresnel, líneas
   de escaneo y pulso) a todas las mallas del modelo. Se usa en paredes y objetos.
+  `shaders/ghost_erase.gdshader` es la variante de los borradores: dibuja el
+  mismo holograma en rojo y sin test de profundidad, para que se vea siempre
+  encima de la pieza que se va a quitar (si no, se ve a parches por z-fighting).
 - **Pisos**: clic y arrastrar dibuja un **rectángulo** de celdas. La
   previsualización es **plana** y propia (`shaders/floor_preview.gdshader`), no
   el holograma: un piso se lee mejor como superficie. Un único quad cubre todo
@@ -268,7 +307,10 @@ scripts/sistemas/build/
 ├── build_input.gd           Acciones de entrada creadas en runtime
 ├── shaders/grid.gdshader    Grilla anti-aliased
 ├── shaders/ghost.gdshader   Fantasma holografico de paredes y objetos
+├── shaders/ghost_erase.gdshader    Variante roja de borrado (sin depth test)
+├── shaders/ghost_common.gdshaderinc  Cuerpo compartido de los fantasmas
 ├── shaders/floor_preview.gdshader  Vista previa plana del pincel de pisos
+├── shaders/menu_tint.gdshader      Tinte rojo de los borradores en el menu
 └── prefabs/
     ├── floor_tile.tscn
     └── wall_segment.tscn

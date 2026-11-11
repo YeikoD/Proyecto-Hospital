@@ -1,0 +1,15 @@
+﻿[gd_resource type="Resource" script_class="BuildItem" format=3]
+
+[ext_resource type="Script" path="res://scripts/sistemas/build/build_item.gd" id="1_script"]
+[ext_resource type="Texture2D" path="res://icon.svg" id="2_preview"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"erase_floor"
+display_name = "Borrador de piso"
+category = "construir"
+subcategory = "base"
+object_type = "erase_floor"
+preview = ExtResource("2_preview")
+preview_tint = Color(1, 0.32, 0.28, 1)
+notes = "Borra solo suelos."

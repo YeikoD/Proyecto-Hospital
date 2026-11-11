@@ -7,6 +7,13 @@ extends Node3D
 
 
 func _ready() -> void:
+	# El hospital usa NavMesh sobre todo el mapa para que los spawner lejanos
+	# (terreno, patio) sean caminables. Se fuerza aqui (y no solo en la escena)
+	# para que persista aunque el editor re-serialize la escena.
+	var nav := get_node_or_null("BuildSystem/BuildNavigation") as BuildNavigation
+	if nav != null:
+		nav.include_scene_geometry = true
+		nav.call_deferred("bake_now")
 	call_deferred("_setup_npcs")
 
 
