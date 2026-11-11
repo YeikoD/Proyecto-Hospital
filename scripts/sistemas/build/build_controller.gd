@@ -21,9 +21,36 @@ signal object_removed(object: Node)
 
 const FLOOR_PREFAB := preload("res://scripts/sistemas/build/prefabs/floor_tile.tscn")
 const WALL_PREFAB := preload("res://scripts/sistemas/build/prefabs/wall_segment.tscn")
+const GHOST_SHADER := preload("res://scripts/sistemas/build/shaders/ghost.gdshader")
+## Previsualizacion del pincel de pisos: plana, con borde y cuadricula por celda
+## (a diferencia del holograma, que queda mejor para volumenes).
+const FLOOR_PREVIEW_SHADER := preload("res://scripts/sistemas/build/shaders/floor_preview.gdshader")
 const COLOR_OK := Color(0.25, 1.0, 0.6, 0.35)
 const COLOR_BAD := Color(1.0, 0.3, 0.25, 0.42)
 const COLOR_ERASE := Color(1.0, 0.45, 0.2, 0.5)
+
+## Colores de la previsualizacion plana del piso (mas claros que el holograma
+## para que se lean sobre el cesped y otros suelos claros).
+const FLOOR_PREVIEW_FILL := Color(0.25, 1.0, 0.62)
+const FLOOR_PREVIEW_LINE := Color(0.72, 1.0, 0.92)
+const FLOOR_ERASE_FILL := Color(1.0, 0.42, 0.18)
+const FLOOR_ERASE_LINE := Color(1.0, 0.72, 0.45)
+## Altura de la previsualizacion de piso sobre el plano (por encima del suelo).
+const FLOOR_PREVIEW_LIFT := 0.09
+
+## Fuerza del fantasma: las piezas ya dibujadas son suaves y la pieza actual
+## (la que esta en el borde de avance) se ve mas solida.
+const GHOST_PREVIEW_STRENGTH := 0.5
+const GHOST_CURRENT_STRENGTH := 1.0
+## Tiempo que tarda cada tramo del arrastre en "construirse" desde el suelo.
+const WALL_REVEAL_SEGMENT_TIME := 0.065
+## Pequeno retardo entre paredes al confirmar el dibujo (efecto de obra).
+const WALL_BUILD_STAGGER := 0.035
+const WALL_BUILD_TIME := 0.16
+## Pincel de piso: tiempo por celda del trazado y del efecto de obra.
+const FLOOR_REVEAL_CELL_TIME := 0.04
+const FLOOR_BUILD_STAGGER := 0.018
+const FLOOR_BUILD_TIME := 0.14
 
 @export var grid: BuildGrid
 @export var build_camera: BuildCamera
@@ -71,19 +98,50 @@ var _selected_object_item: BuildItem
 var _object_rotation := 0
 var _active_map_file: String = ""
 
-var _floor_ghost: MeshInstance3D
-var _wall_ghost: MeshInstance3D
-var _object_ghost: MeshInstance3D
-var _ghost_material: StandardMaterial3D
+var _floor_preview: MeshInstance3D
+var _floor_preview_material: ShaderMaterial
+## Celdas que tiene dibujadas la previsualizacion actual (para reconstruirla
+## solo cuando cambia el rectangulo).
+var _floor_preview_cells: Array[Vector2i] = []
+var _floor_preview_cols := 1
+var _floor_preview_rows := 1
+var _wall_ghost: Node3D
+var _object_ghost: Node3D
+
+## Modelo real usado por el fantasma de paredes (misma escena que la pieza).
+var _wall_ghost_model: Node3D
+var _wall_ghost_material: ShaderMaterial
+var _wall_ghost_aabb := AABB()
+var _wall_ghost_scene: PackedScene
+## Desfase vertical del origen del modelo (las cajas procedurales se centran).
+var _wall_ghost_base_offset := 0.0
+
+## Modelo real usado por el fantasma de objetos (misma escena que la pieza).
+var _object_ghost_model: Node3D
+var _object_ghost_material: ShaderMaterial
+var _object_ghost_aabb := AABB()
+var _object_ghost_scene: PackedScene
+var _object_ghost_footprint := Vector2i(1, 1)
 
 var _hover_cell := Vector2i.ZERO
 var _hover_wall := Vector3i.ZERO
 var _hovering := false
 var _painting := false
+var _floor_dragging := false
+var _floor_drag_start := Vector2i.ZERO
+var _floor_drag_cells: Array[Vector2i] = []
+## Progreso del "pintado" del rectangulo, en celdas completas.
+var _floor_drag_reveal := 0.0
 var _wall_dragging := false
 var _wall_drag_start := Vector3i.ZERO
 var _wall_drag_start_cell := Vector2i.ZERO
-var _wall_drag_ghosts: Array[MeshInstance3D] = []
+var _wall_drag_ghosts: Array[Node3D] = []
+var _wall_drag_ghost_materials: Array[ShaderMaterial] = []
+var _wall_drag_keys: Array[Vector3i] = []
+var _wall_drag_local_aabb := AABB()
+var _wall_drag_base_offset := 0.0
+## Progreso del "trazado" durante el arrastre, en tramos completos.
+var _wall_drag_reveal := 0.0
 var _corner_scene_cache: Dictionary = {}
 ## Modelos de esquina del muro activo: "IZQ"/"DER" -> PackedScene.
 var _corner_scenes: Dictionary = {}
@@ -199,6 +257,8 @@ func exit_build_mode() -> void:
 	_hovering = false
 	_clear_wall_drag_ghosts()
 	_wall_dragging = false
+	_clear_floor_drag_preview()
+	_floor_dragging = false
 	_hide_ghosts()
 
 	if build_camera != null:
@@ -221,6 +281,13 @@ func exit_build_mode() -> void:
 
 
 func set_tool(new_tool: Tool) -> void:
+	# Cambiar de herramienta cancela cualquier arrastre en curso.
+	if new_tool != Tool.WALL and _wall_dragging:
+		_clear_wall_drag_ghosts()
+		_wall_dragging = false
+	if new_tool != Tool.FLOOR and _floor_dragging:
+		_clear_floor_drag_preview()
+		_floor_dragging = false
 	tool = new_tool
 	_update_ui()
 
@@ -292,9 +359,20 @@ func _process(_delta: float) -> void:
 	if tool == Tool.WALL and _wall_dragging:
 		if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
 			if _hovering:
-				_update_wall_drag()
+				_update_wall_drag(_delta)
 		else:
 			_finish_wall_drag()
+			_hide_ghosts()
+			_update_ui()
+			return
+
+	# Lo mismo para el pincel de pisos.
+	if tool == Tool.FLOOR and _floor_dragging:
+		if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+			if _hovering:
+				_update_floor_drag(_delta)
+		else:
+			_finish_floor_drag()
 			_hide_ghosts()
 			_update_ui()
 			return
@@ -310,7 +388,15 @@ func _process(_delta: float) -> void:
 			if not _wall_dragging:
 				_start_wall_drag()
 			if _wall_dragging:
-				_update_wall_drag()
+				_update_wall_drag(_delta)
+	elif tool == Tool.FLOOR:
+		# Clic y arrastrar: rectangulo de celdas con vista previa progresiva.
+		if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+			var over_ui := get_viewport().gui_get_hovered_control() != null
+			if not _floor_dragging and not over_ui:
+				_start_floor_drag()
+			if _floor_dragging:
+				_update_floor_drag(_delta)
 	elif tool == Tool.OBJECT:
 		# Un clic = un objeto. Arrastrar no debe llenar la sala de muebles.
 		# Ignorar clics sobre la UI (menú de items).
@@ -320,6 +406,7 @@ func _process(_delta: float) -> void:
 			_apply_tool()
 		_painting = pressed
 	else:
+		# ERASE: pintar borrando celda a celda.
 		_painting = Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
 		if _painting:
 			_apply_tool()
@@ -509,7 +596,7 @@ func _place_object(cell: Vector2i, item: BuildItem, rotation_steps: int) -> bool
 	return true
 
 
-func _place_floor(cell: Vector2i) -> bool:
+func _place_floor(cell: Vector2i, silent: bool = false) -> bool:
 	if not _can_place_floor(cell):
 		return false
 
@@ -528,7 +615,8 @@ func _place_floor(cell: Vector2i) -> bool:
 		piece.global_position = grid.cell_center(cell)
 	piece.set_dimensions(Vector3(grid.cell_size, floor_thickness, grid.cell_size))
 	_floors[cell] = piece
-	pieces_changed.emit()
+	if not silent:
+		pieces_changed.emit()
 	return true
 
 
@@ -537,6 +625,7 @@ func _place_wall(key: Vector3i) -> bool:
 		return false
 	_refresh_wall_variants()
 	_refresh_wall_shapes()
+	_animate_walls_build([key])
 	pieces_changed.emit()
 	return true
 
@@ -557,14 +646,29 @@ func _start_wall_drag() -> void:
 	_wall_dragging = true
 	_wall_drag_start = _hover_wall
 	_wall_drag_start_cell = _hover_cell
+	_wall_drag_reveal = 0.0
+	_clear_wall_drag_ghosts(false)
+	_wall_drag_keys.clear()
 
 
-func _update_wall_drag() -> void:
+func _update_wall_drag(delta: float = 0.0) -> void:
 	if not _hovering:
 		return
-	_rebuild_wall_drag_ghosts()
+	if delta > 0.0:
+		_wall_drag_reveal += delta / WALL_REVEAL_SEGMENT_TIME
+
+	var keys := _wall_drag_segment_keys()
+	# Si el arrastre se alarga, el tramo nuevo empieza a construirse desde cero.
+	if keys.size() > _wall_drag_keys.size():
+		_wall_drag_reveal = minf(_wall_drag_reveal, float(_wall_drag_keys.size()))
+	_wall_drag_reveal = minf(_wall_drag_reveal, float(keys.size()))
+
+	if not _same_wall_keys(keys, _wall_drag_keys):
+		_rebuild_wall_drag_ghosts(keys)
+	_update_wall_drag_ghosts(keys)
 
 
+## Devuelve los tramos en orden de dibujo: desde el primer clic hasta el cursor.
 func _wall_drag_segment_keys() -> Array[Vector3i]:
 	var keys: Array[Vector3i] = []
 	if not _wall_dragging:
@@ -577,18 +681,18 @@ func _wall_drag_segment_keys() -> Array[Vector3i]:
 	if axis == 1:
 		# Pared horizontal: z fijo (frontera), x varia por celdas.
 		var fixed_z := _wall_drag_start.y
-		var x_min := mini(_wall_drag_start.x, _hover_cell.x)
-		var x_max := maxi(_wall_drag_start.x, _hover_cell.x)
-		for x in range(x_min, x_max + 1):
+		var end_x := _hover_cell.x
+		var step_x := 1 if end_x >= _wall_drag_start.x else -1
+		for x in range(_wall_drag_start.x, end_x + step_x, step_x):
 			var key := Vector3i(x, fixed_z, 1)
 			if grid.is_wall_inside(key):
 				keys.append(key)
 	else:
 		# Pared vertical: x fijo (frontera), z varia por celdas.
 		var fixed_x := _wall_drag_start.x
-		var z_min := mini(_wall_drag_start.y, _hover_cell.y)
-		var z_max := maxi(_wall_drag_start.y, _hover_cell.y)
-		for z in range(z_min, z_max + 1):
+		var end_z := _hover_cell.y
+		var step_z := 1 if end_z >= _wall_drag_start.y else -1
+		for z in range(_wall_drag_start.y, end_z + step_z, step_z):
 			var key := Vector3i(fixed_x, z, 0)
 			if grid.is_wall_inside(key):
 				keys.append(key)
@@ -596,50 +700,288 @@ func _wall_drag_segment_keys() -> Array[Vector3i]:
 	return keys
 
 
-func _rebuild_wall_drag_ghosts() -> void:
-	_clear_wall_drag_ghosts()
-	for key in _wall_drag_segment_keys():
-		var ghost := MeshInstance3D.new()
-		ghost.name = "WallDragGhost"
-		var box := BoxMesh.new()
-		box.size = Vector3(grid.cell_size * 0.98, wall_height, wall_thickness * 0.7)
-		ghost.mesh = box
-		ghost.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		var mat := StandardMaterial3D.new()
-		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-		if _can_place_wall(key):
-			mat.albedo_color = COLOR_OK
-		else:
-			mat.albedo_color = COLOR_BAD
-		ghost.material_override = mat
-		ghost.global_transform = Transform3D(
-			Basis(Vector3.UP, grid.wall_yaw(key)),
-			grid.wall_center(key) + Vector3.UP * (wall_height * 0.5)
-		)
+static func _same_wall_keys(a: Array[Vector3i], b: Array[Vector3i]) -> bool:
+	if a.size() != b.size():
+		return false
+	for i in a.size():
+		if a[i] != b[i]:
+			return false
+	return true
+
+
+func _rebuild_wall_drag_ghosts(keys: Array[Vector3i]) -> void:
+	# Se reutilizan los fantasmas existentes: al cruzar de celda solo cambia la
+	# cantidad de tramos, no hace falta reinstanciar el modelo entero.
+	if _wall_ghost_scene != wall_scene or _active_map_file != "":
+		_clear_wall_drag_ghosts(false)
+		_wall_ghost_scene = wall_scene
+		_wall_drag_local_aabb = AABB()
+		_wall_drag_base_offset = 0.0
+
+	while _wall_drag_ghosts.size() > keys.size():
+		var extra: Node3D = _wall_drag_ghosts.pop_back()
+		_wall_drag_ghost_materials.pop_back()
+		if is_instance_valid(extra):
+			extra.queue_free()
+
+	while _wall_drag_ghosts.size() < keys.size():
+		var built := _build_wall_ghost_visual()
+		if built.is_empty():
+			break
+		if _wall_drag_local_aabb.size == Vector3.ZERO:
+			_wall_drag_local_aabb = built.get("aabb", AABB())
+			_wall_drag_base_offset = float(built.get("base_offset", 0.0))
+		var ghost: Node3D = built["root"]
+		var mat: ShaderMaterial = built["mat"]
+		ghost.visible = false
 		add_child(ghost)
 		_wall_drag_ghosts.append(ghost)
+		_wall_drag_ghost_materials.append(mat)
+
+	_wall_drag_keys = keys.duplicate()
 
 
-func _clear_wall_drag_ghosts() -> void:
+func _update_wall_drag_ghosts(keys: Array[Vector3i]) -> void:
+	var count := mini(keys.size(), _wall_drag_ghosts.size())
+	if count <= 0:
+		return
+
+	var progress := minf(_wall_drag_reveal, float(count))
+	var current := clampi(int(ceil(progress)) - 1, 0, count - 1)
+
+	for i in count:
+		var ghost := _wall_drag_ghosts[i]
+		var mat := _wall_drag_ghost_materials[i]
+		if not is_instance_valid(ghost):
+			continue
+		var t := clampf(progress - float(i), 0.0, 1.0)
+		ghost.visible = t > 0.0
+		if not ghost.visible:
+			continue
+		var key := keys[i]
+		ghost.global_transform = _wall_ghost_transform(key, _wall_drag_base_offset)
+		_update_ghost_material(
+			mat, ghost, _wall_drag_local_aabb,
+			_can_place_wall(key), false,
+			GHOST_CURRENT_STRENGTH if i == current else GHOST_PREVIEW_STRENGTH,
+			t
+		)
+
+
+func _clear_wall_drag_ghosts(reset_reveal: bool = true) -> void:
 	for ghost in _wall_drag_ghosts:
 		if is_instance_valid(ghost):
 			ghost.queue_free()
 	_wall_drag_ghosts.clear()
+	_wall_drag_ghost_materials.clear()
+	_wall_drag_keys.clear()
+	if reset_reveal:
+		_wall_drag_reveal = 0.0
 
 
 func _finish_wall_drag() -> void:
+	var keys := _wall_drag_segment_keys()
 	var placed := false
-	for key in _wall_drag_segment_keys():
+	for key in keys:
 		if _place_wall_silent(key):
 			placed = true
 	if placed:
 		_refresh_wall_variants()
 		_refresh_wall_shapes()
+		_animate_walls_build(keys)
 		pieces_changed.emit()
 	_clear_wall_drag_ghosts()
 	_wall_dragging = false
+
+
+# --------------------------------------------------------------------------
+# Pincel de pisos (estilo Sims): clic y arrastrar para rellenar un rectangulo.
+# --------------------------------------------------------------------------
+
+func _start_floor_drag() -> void:
+	if not _hovering or not grid.is_cell_inside(_hover_cell):
+		return
+	_floor_dragging = true
+	_floor_drag_start = _hover_cell
+	_floor_drag_reveal = 0.0
+	_clear_floor_drag_preview(false)
+	_floor_drag_cells.clear()
+
+
+func _update_floor_drag(delta: float = 0.0) -> void:
+	if not _hovering:
+		return
+	if delta > 0.0:
+		_floor_drag_reveal += delta / FLOOR_REVEAL_CELL_TIME
+
+	var cells := _floor_drag_rect_cells()
+	# Si el rectangulo crece, las celdas nuevas empiezan a pintarse desde cero.
+	if not _same_floor_cells(cells, _floor_drag_cells):
+		if cells.size() > _floor_drag_cells.size():
+			_floor_drag_reveal = minf(_floor_drag_reveal, float(_floor_drag_cells.size()))
+		_floor_drag_cells = cells.duplicate()
+	_floor_drag_reveal = minf(_floor_drag_reveal, float(cells.size()))
+
+	if not _same_floor_cells(cells, _floor_preview_cells):
+		_rebuild_floor_preview(cells, _floor_drag_start, false)
+	_update_floor_preview(cells, _floor_drag_reveal, false)
+
+
+## Celdas del rectangulo definido por el primer clic y el cursor, en orden de
+## barrido (fila por fila) desde la esquina inicial hacia el cursor.
+func _floor_drag_rect_cells() -> Array[Vector2i]:
+	var cells: Array[Vector2i] = []
+	if not _floor_dragging:
+		return cells
+
+	var start := grid.clamp_cell(_floor_drag_start)
+	var end := grid.clamp_cell(_hover_cell)
+	var x0 := mini(start.x, end.x)
+	var x1 := maxi(start.x, end.x)
+	var z0 := mini(start.y, end.y)
+	var z1 := maxi(start.y, end.y)
+
+	var rows: Array[int] = []
+	for z in range(z0, z1 + 1):
+		rows.append(z)
+	if end.y < start.y:
+		rows.reverse()
+	for z in rows:
+		var columns: Array[int] = []
+		for x in range(x0, x1 + 1):
+			columns.append(x)
+		if end.x < start.x:
+			columns.reverse()
+		for x in columns:
+			cells.append(Vector2i(x, z))
+	return cells
+
+
+static func _same_floor_cells(a: Array[Vector2i], b: Array[Vector2i]) -> bool:
+	if a.size() != b.size():
+		return false
+	for i in a.size():
+		if a[i] != b[i]:
+			return false
+	return true
+
+
+## Reconstruye la malla plana del rectangulo y su mascara de validez. Solo se
+## llama cuando cambia el conjunto de celdas, no en cada frame.
+func _rebuild_floor_preview(
+	cells: Array[Vector2i], start: Vector2i, erasing: bool
+) -> void:
+	if _floor_preview == null:
+		return
+	if cells.is_empty():
+		_floor_preview.visible = false
+		_floor_preview_cells.clear()
+		return
+
+	var min_cell := cells[0]
+	var max_cell := cells[0]
+	for cell in cells:
+		min_cell.x = mini(min_cell.x, cell.x)
+		min_cell.y = mini(min_cell.y, cell.y)
+		max_cell.x = maxi(max_cell.x, cell.x)
+		max_cell.y = maxi(max_cell.y, cell.y)
+	var cols := max_cell.x - min_cell.x + 1
+	var rows := max_cell.y - min_cell.y + 1
+	_floor_preview_cols = cols
+	_floor_preview_rows = rows
+
+	# Quad que cubre el rectangulo completo. Las UV van de 0 a 1 en el sentido
+	# del trazado: u = 0 en la columna del primer clic, v = 0 en su fila.
+	var cs := grid.cell_size
+	var half_w := float(cols) * cs * 0.5
+	var half_h := float(rows) * cs * 0.5
+	var end := cells[cells.size() - 1]
+	var neg_u := 0.0 if end.x >= start.x else 1.0
+	var neg_v := 0.0 if end.y >= start.y else 1.0
+	var pos_u := 1.0 - neg_u
+	var pos_v := 1.0 - neg_v
+
+	var corners := [
+		[Vector3(-half_w, 0.0, -half_h), Vector2(neg_u, neg_v)],
+		[Vector3(half_w, 0.0, -half_h), Vector2(pos_u, neg_v)],
+		[Vector3(half_w, 0.0, half_h), Vector2(pos_u, pos_v)],
+		[Vector3(-half_w, 0.0, half_h), Vector2(neg_u, pos_v)],
+	]
+	# Orden de vertices para que la cara mire hacia arriba.
+	var order := [0, 2, 1, 0, 3, 2]
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for i in order:
+		var corner: Array = corners[i]
+		st.set_normal(Vector3.UP)
+		st.set_uv(corner[1])
+		st.add_vertex(corner[0])
+	_floor_preview.mesh = st.commit()
+
+	var base := grid.global_position
+	_floor_preview.global_transform = Transform3D(
+		Basis.IDENTITY,
+		Vector3(
+			base.x + (float(min_cell.x) + float(cols) * 0.5) * cs,
+			grid.plane_global_y() + FLOOR_PREVIEW_LIFT,
+			base.z + (float(min_cell.y) + float(rows) * 0.5) * cs
+		)
+	)
+
+	# Mascara: una pixel por celda, en el mismo orden de trazado que las UV.
+	var image := Image.create(cols, rows, false, Image.FORMAT_L8)
+	for i in cells.size():
+		var ok := erasing or _can_place_floor(cells[i])
+		image.set_pixel(i % cols, i / cols, Color(1, 1, 1) if ok else Color(0, 0, 0))
+	var texture := ImageTexture.create_from_image(image)
+	_floor_preview_material.set_shader_parameter("valid_mask", texture)
+	_floor_preview_material.set_shader_parameter("grid_size", Vector2(cols, rows))
+
+	_floor_preview_cells = cells.duplicate()
+
+
+## Actualiza color, revelado y celda actual de la previsualizacion ya dibujada.
+func _update_floor_preview(
+	cells: Array[Vector2i], reveal_cells: float, erasing: bool
+) -> void:
+	if _floor_preview == null or _floor_preview_material == null or cells.is_empty():
+		return
+	var mat := _floor_preview_material
+	var fill := FLOOR_ERASE_FILL if erasing else FLOOR_PREVIEW_FILL
+	var line := FLOOR_ERASE_LINE if erasing else FLOOR_PREVIEW_LINE
+	mat.set_shader_parameter("fill_color", Color(fill.r, fill.g, fill.b, 1.0))
+	mat.set_shader_parameter("line_color", Color(line.r, line.g, line.b, 1.0))
+	mat.set_shader_parameter("invalid_color", Color(COLOR_BAD.r, COLOR_BAD.g, COLOR_BAD.b, 1.0))
+	mat.set_shader_parameter("grid_size", Vector2(_floor_preview_cols, _floor_preview_rows))
+
+	var total := float(cells.size())
+	var reveal := clampf(reveal_cells, 0.0, total)
+	var current := clampi(int(ceil(reveal)) - 1, 0, cells.size() - 1)
+	mat.set_shader_parameter("reveal_cells", reveal)
+	mat.set_shader_parameter("current_index", float(current))
+	_floor_preview.visible = true
+
+
+func _clear_floor_drag_preview(reset_reveal: bool = true) -> void:
+	_floor_drag_cells.clear()
+	_floor_preview_cells.clear()
+	if _floor_preview != null:
+		_floor_preview.visible = false
+	if reset_reveal:
+		_floor_drag_reveal = 0.0
+
+
+func _finish_floor_drag() -> void:
+	var cells := _floor_drag_rect_cells()
+	var placed: Array[Vector2i] = []
+	for cell in cells:
+		if _place_floor(cell, true):
+			placed.append(cell)
+	if not placed.is_empty():
+		_animate_floors_build(placed)
+		pieces_changed.emit()
+	_clear_floor_drag_preview()
+	_floor_dragging = false
 
 
 func _erase_at(cell: Vector2i, wall: Vector3i) -> bool:
@@ -733,6 +1075,7 @@ func _apply_selected_item() -> void:
 				_corner_scene_cache.clear()
 				_corner_trim_cache.clear()
 				_corner_footprint_cache.clear()
+			_rebuild_wall_ghost_model()
 		"furniture", "prop", "mueble", "objeto":
 			tool = Tool.OBJECT
 			_selected_object_item = selected_item
@@ -1353,18 +1696,19 @@ func _update_hover() -> bool:
 
 
 func _update_ghosts() -> void:
+	# El arrastre de pisos mantiene su propia previsualizacion persistente:
+	# no hay que ocultarla en cada frame.
+	if tool == Tool.FLOOR and _floor_dragging:
+		return
 	_hide_ghosts()
 	if not _hovering:
 		return
 	if tool == Tool.WALL and _wall_dragging:
-		if _wall_ghost != null:
-			_wall_ghost.visible = false
 		return
 
 	match tool:
 		Tool.FLOOR:
-			_show_floor_ghost(grid.clamp_cell(_hover_cell),
-				_can_place_floor(_hover_cell), false)
+			_show_floor_preview(grid.clamp_cell(_hover_cell), false)
 		Tool.WALL:
 			_show_wall_ghost(grid.clamp_wall(_hover_wall),
 				_can_place_wall(_hover_wall), false)
@@ -1377,63 +1721,121 @@ func _update_ghosts() -> void:
 			elif _walls.has(_hover_wall):
 				_show_wall_ghost(_hover_wall, true, true)
 			else:
-				_show_floor_ghost(grid.clamp_cell(_hover_cell),
-					_floors.has(_hover_cell), true)
+				_show_floor_preview(grid.clamp_cell(_hover_cell), true)
 
 
-func _show_floor_ghost(cell: Vector2i, valid: bool, erasing: bool) -> void:
-	_floor_ghost.visible = true
-	var box := _floor_ghost.mesh as BoxMesh
-	box.size = Vector3(grid.cell_size * 0.94, 0.06, grid.cell_size * 0.94)
-	_floor_ghost.global_position = grid.cell_center(cell) \
-		+ Vector3.UP * (0.05 if not erasing else 0.09)
-	_set_ghost_color(valid, erasing)
+## Previsualizacion de una sola celda (cursor quieto o herramienta de borrar).
+func _show_floor_preview(cell: Vector2i, erasing: bool) -> void:
+	if _floor_preview == null:
+		return
+	var cells: Array[Vector2i] = [cell]
+	if not _same_floor_cells(cells, _floor_preview_cells):
+		_rebuild_floor_preview(cells, cell, erasing)
+	_update_floor_preview(cells, 1.0, erasing)
 
 
 func _show_wall_ghost(key: Vector3i, valid: bool, erasing: bool) -> void:
+	if _wall_ghost == null:
+		return
+	if _wall_ghost_model == null or _wall_ghost_scene != wall_scene:
+		_rebuild_wall_ghost_model()
+	if _wall_ghost_model == null or _wall_ghost_material == null:
+		return
 	_wall_ghost.visible = true
-	var box := _wall_ghost.mesh as BoxMesh
-	box.size = Vector3(grid.cell_size * 0.98, wall_height, wall_thickness * 0.7)
-	_wall_ghost.global_transform = Transform3D(
-		Basis(Vector3.UP, grid.wall_yaw(key)),
-		grid.wall_center(key) + Vector3.UP * (wall_height * 0.5)
+	_wall_ghost.global_transform = _wall_ghost_transform(key, _wall_ghost_base_offset)
+	_update_ghost_material(
+		_wall_ghost_material, _wall_ghost, _wall_ghost_aabb,
+		valid, erasing, GHOST_CURRENT_STRENGTH, 1.0
 	)
-	_set_ghost_color(valid, erasing)
+
+
+## Transformacion exacta que usa `_spawn_wall_piece`, para que el fantasma y
+## la pared real coincidan (mismo origen y misma rotacion).
+func _wall_ghost_transform(key: Vector3i, base_offset: float) -> Transform3D:
+	return Transform3D(
+		Basis(Vector3.UP, grid.wall_yaw(key)),
+		grid.wall_center(key) + Vector3.UP * base_offset
+	)
+
+
+func _update_ghost_material(
+	mat: ShaderMaterial,
+	ghost: Node3D,
+	local_aabb: AABB,
+	valid: bool,
+	erasing: bool,
+	strength: float,
+	reveal: float,
+	fallback_height: float = 0.0
+) -> void:
+	if mat == null or ghost == null:
+		return
+	var color := COLOR_OK
+	if erasing:
+		color = COLOR_ERASE
+	elif not valid:
+		color = COLOR_BAD
+	mat.set_shader_parameter("ghost_color", Color(color.r, color.g, color.b, 1.0))
+	mat.set_shader_parameter("ghost_alpha", 0.42 if valid and not erasing else 0.5)
+	mat.set_shader_parameter("strength", strength)
+	mat.set_shader_parameter("reveal", reveal)
+	var base_y := ghost.global_position.y + local_aabb.position.y
+	var top_y := ghost.global_position.y + local_aabb.end.y
+	if local_aabb.size.y < 0.001:
+		base_y = ghost.global_position.y
+		top_y = base_y + (fallback_height if fallback_height > 0.0 else wall_height)
+	mat.set_shader_parameter("build_bottom", base_y)
+	mat.set_shader_parameter("build_top", top_y)
 
 
 func _show_object_ghost(cell: Vector2i, valid: bool, erasing: bool) -> void:
-	_object_ghost.visible = true
-	var box := _object_ghost.mesh as BoxMesh
+	if _object_ghost == null:
+		return
+
+	var scene: PackedScene = null
 	var footprint := Vector2i(1, 1)
-	if _selected_object_item != null:
+	var steps := _object_rotation
+	if erasing:
+		# Al borrar se muestra el modelo del objeto que hay bajo el cursor.
+		var piece := _object_cells.get(cell) as BuildPiece
+		if piece != null:
+			var item := _find_item_by_id(piece.item_id)
+			if item != null:
+				scene = item.scene
+				footprint = Vector2i(
+					maxi(item.footprint.x, 1), maxi(item.footprint.y, 1)
+				)
+			# El objeto puede ocupar varias celdas: usar su celda primaria.
+			cell = piece.cell
+			steps = piece.object_rotation_steps
+	elif _selected_object_item != null:
+		scene = _selected_object_item.scene
 		footprint = Vector2i(
 			maxi(_selected_object_item.footprint.x, 1),
 			maxi(_selected_object_item.footprint.y, 1)
 		)
-	box.size = Vector3(
-		grid.cell_size * 0.8 * footprint.x,
-		0.9,
-		grid.cell_size * 0.8 * footprint.y
-	)
+
+	if _object_ghost_model == null or _object_ghost_scene != scene \
+			or _object_ghost_footprint != footprint:
+		_rebuild_object_ghost_model(scene, footprint)
+	if _object_ghost_model == null or _object_ghost_material == null:
+		return
+
+	_object_ghost.visible = true
 	_object_ghost.global_transform = Transform3D(
-		Basis(Vector3.UP, float(_object_rotation) * PI * 0.5),
-		grid.cell_center(cell) + Vector3.UP * 0.45
+		Basis(Vector3.UP, float(steps % 4) * PI * 0.5),
+		grid.cell_center(cell) + Vector3.UP * object_height_offset
 	)
-	_set_ghost_color(valid, erasing)
-
-
-func _set_ghost_color(valid: bool, erasing: bool) -> void:
-	if erasing:
-		_ghost_material.albedo_color = COLOR_ERASE
-	elif valid:
-		_ghost_material.albedo_color = COLOR_OK
-	else:
-		_ghost_material.albedo_color = COLOR_BAD
+	_update_ghost_material(
+		_object_ghost_material, _object_ghost, _object_ghost_aabb,
+		valid, erasing, GHOST_CURRENT_STRENGTH, 1.0,
+		maxf(_object_ghost_aabb.size.y, 1.0)
+	)
 
 
 func _hide_ghosts() -> void:
-	if _floor_ghost != null:
-		_floor_ghost.visible = false
+	if _floor_preview != null:
+		_floor_preview.visible = false
 	if _wall_ghost != null:
 		_wall_ghost.visible = false
 	if _object_ghost != null:
@@ -1483,26 +1885,287 @@ func _resolve_references() -> void:
 		add_child(build_menu)
 
 func _create_ghosts() -> void:
-	_ghost_material = StandardMaterial3D.new()
-	_ghost_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	_ghost_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	_ghost_material.cull_mode = BaseMaterial3D.CULL_DISABLED
-	_ghost_material.albedo_color = COLOR_OK
+	_floor_preview = MeshInstance3D.new()
+	_floor_preview.name = "FloorPreview"
+	_floor_preview.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_floor_preview_material = ShaderMaterial.new()
+	_floor_preview_material.shader = FLOOR_PREVIEW_SHADER
+	_floor_preview.material_override = _floor_preview_material
+	_floor_preview.visible = false
+	add_child(_floor_preview)
+	# Mascara inicial (1x1 valida) para que el sampler nunca quede sin textura.
+	var empty_mask := Image.create(1, 1, false, Image.FORMAT_L8)
+	empty_mask.fill(Color(1, 1, 1))
+	_floor_preview_material.set_shader_parameter(
+		"valid_mask", ImageTexture.create_from_image(empty_mask)
+	)
+	_wall_ghost = Node3D.new()
+	_wall_ghost.name = "WallGhost"
+	_wall_ghost.visible = false
+	add_child(_wall_ghost)
+	_object_ghost = Node3D.new()
+	_object_ghost.name = "ObjectGhost"
+	_object_ghost.visible = false
+	add_child(_object_ghost)
+	_rebuild_wall_ghost_model()
 
-	_floor_ghost = _make_ghost("FloorGhost")
-	_wall_ghost = _make_ghost("WallGhost")
-	_object_ghost = _make_ghost("ObjectGhost")
+
+## Reconstruye el fantasma con la malla real de la pared seleccionada. Antes
+## era una caja generica, que quedaba desfasada respecto del modelo colocado.
+func _rebuild_wall_ghost_model() -> void:
+	if _wall_ghost == null:
+		return
+	if _wall_ghost_model != null:
+		if is_instance_valid(_wall_ghost_model):
+			_wall_ghost.remove_child(_wall_ghost_model)
+			_wall_ghost_model.queue_free()
+		_wall_ghost_model = null
+	_wall_ghost_material = null
+	_wall_ghost_aabb = AABB()
+	_wall_ghost_base_offset = 0.0
+	_wall_ghost_scene = wall_scene
+
+	var built := _build_wall_ghost_visual()
+	if built.is_empty():
+		return
+	_wall_ghost_model = built["root"]
+	_wall_ghost_material = built["mat"]
+	_wall_ghost_aabb = built.get("aabb", AABB())
+	_wall_ghost_base_offset = float(built.get("base_offset", 0.0))
+	_wall_ghost.add_child(_wall_ghost_model)
+	_wall_ghost.visible = false
 
 
-func _make_ghost(node_name: String) -> MeshInstance3D:
-	var ghost := MeshInstance3D.new()
-	ghost.name = node_name
-	ghost.mesh = BoxMesh.new()
-	ghost.material_override = _ghost_material
-	ghost.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	ghost.visible = false
-	add_child(ghost)
-	return ghost
+## Instancia el modelo de pared (o una caja de respaldo) y le aplica el shader
+## fantasma a todas sus mallas. Devuelve root, material, AABB local y desfase.
+func _build_wall_ghost_visual() -> Dictionary:
+	var mat := ShaderMaterial.new()
+	mat.shader = GHOST_SHADER
+
+	var container := Node3D.new()
+	container.name = "WallGhostModel"
+
+	var instance: Node3D
+	if _active_map_file == "" and wall_scene != null:
+		var packed := wall_scene.instantiate()
+		if packed is Node3D:
+			instance = packed as Node3D
+		else:
+			packed.queue_free()
+	if instance == null:
+		instance = _make_ghost_box_wall()
+	container.add_child(instance)
+
+	_strip_ghost_instance(instance)
+
+	# Las cajas procedurales se ajustan al tamano real de la pieza.
+	var direct := instance.get_node_or_null("MeshInstance3D") as MeshInstance3D
+	if direct != null and direct.mesh is BoxMesh:
+		var source := direct.mesh as BoxMesh
+		var box := BoxMesh.new()
+		box.size = Vector3(grid.cell_size, wall_height, wall_thickness)
+		box.material = source.material
+		direct.mesh = box
+
+	var meshes: Array[MeshInstance3D] = []
+	_collect_meshes(instance, meshes)
+	for mi in meshes:
+		mi.material_override = mat
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+
+	var base_offset := wall_height * 0.5 if direct != null else 0.0
+	return {
+		"root": container,
+		"mat": mat,
+		"aabb": _compute_aabb(instance),
+		"base_offset": base_offset,
+	}
+
+
+func _make_ghost_box_wall() -> Node3D:
+	var root := Node3D.new()
+	root.name = "WallGhostBox"
+	var mi := MeshInstance3D.new()
+	mi.name = "MeshInstance3D"
+	mi.mesh = BoxMesh.new()
+	root.add_child(mi)
+	return root
+
+
+## Reconstruye el fantasma del objeto con la malla real de su modelo. Si no hay
+## escena (o no es 3D) cae en una caja ajustada a la huella del item.
+func _rebuild_object_ghost_model(scene: PackedScene, footprint: Vector2i) -> void:
+	if _object_ghost == null:
+		return
+	if _object_ghost_model != null:
+		if is_instance_valid(_object_ghost_model):
+			_object_ghost.remove_child(_object_ghost_model)
+			_object_ghost_model.queue_free()
+		_object_ghost_model = null
+	_object_ghost_material = null
+	_object_ghost_aabb = AABB()
+	_object_ghost_scene = scene
+	_object_ghost_footprint = footprint
+
+	var built := _build_object_ghost_visual(scene, footprint)
+	if built.is_empty():
+		return
+	_object_ghost_model = built["root"]
+	_object_ghost_material = built["mat"]
+	_object_ghost_aabb = built.get("aabb", AABB())
+	_object_ghost.add_child(_object_ghost_model)
+	_object_ghost.visible = false
+
+
+## Instancia el modelo del objeto y le aplica el mismo shader que a las paredes.
+func _build_object_ghost_visual(scene: PackedScene, footprint: Vector2i) -> Dictionary:
+	var mat := ShaderMaterial.new()
+	mat.shader = GHOST_SHADER
+
+	var container := Node3D.new()
+	container.name = "ObjectGhostModel"
+
+	var instance: Node3D
+	if scene != null:
+		var packed := scene.instantiate()
+		if packed is Node3D:
+			instance = packed as Node3D
+		else:
+			packed.queue_free()
+	if instance == null:
+		instance = _make_ghost_box_object(footprint)
+	container.add_child(instance)
+
+	_strip_ghost_instance(instance)
+
+	var meshes: Array[MeshInstance3D] = []
+	_collect_meshes(instance, meshes)
+	for mi in meshes:
+		mi.material_override = mat
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+
+	return {
+		"root": container,
+		"mat": mat,
+		"aabb": _compute_aabb(instance),
+	}
+
+
+func _make_ghost_box_object(footprint: Vector2i) -> Node3D:
+	var root := Node3D.new()
+	root.name = "ObjectGhostBox"
+	var mi := MeshInstance3D.new()
+	mi.name = "MeshInstance3D"
+	var box := BoxMesh.new()
+	box.size = Vector3(
+		grid.cell_size * 0.8 * maxi(footprint.x, 1),
+		0.9,
+		grid.cell_size * 0.8 * maxi(footprint.y, 1)
+	)
+	mi.mesh = box
+	# La caja se centra en su origen; subirla para que apoye en el suelo.
+	mi.position.y = 0.45
+	root.add_child(mi)
+	return root
+
+
+## Deja la instancia como puramente visual: sin scripts, colisiones, camaras,
+## luces, audio ni animaciones (un SmartObject fantasma no debe registrarse).
+func _strip_ghost_instance(node: Node) -> void:
+	if node.get_script() != null:
+		node.set_script(null)
+	if node is CollisionObject3D:
+		var body := node as CollisionObject3D
+		body.collision_layer = 0
+		body.collision_mask = 0
+	for child in node.get_children():
+		if child is CollisionShape3D or child is CollisionPolygon3D \
+				or child is Light3D or child is Camera3D \
+				or child is AnimationPlayer or child is AnimationTree \
+				or child is AudioStreamPlayer or child is AudioStreamPlayer3D:
+			child.free()
+		else:
+			_strip_ghost_instance(child)
+
+
+## Efecto de obra: las paredes recien confirmadas crecen desde el suelo, una
+## detras de otra, en el mismo orden en que se dibujaron.
+func _animate_walls_build(keys: Array[Vector3i]) -> void:
+	if _active_map_file != "":
+		return
+	var order := 0
+	for key in keys:
+		var piece := _walls.get(key) as BuildPiece
+		if piece != null and is_instance_valid(piece):
+			order = _animate_wall_visual(_piece_visual_node(piece), order)
+		# La esquina visible de una L se anima entera: no tiene colision.
+		var corner := _corner_pieces.get(key) as BuildPiece
+		if corner != null and is_instance_valid(corner):
+			corner.scale = Vector3(corner.scale.x, 0.001, corner.scale.z)
+			var tween := create_tween()
+			tween.bind_node(corner)
+			tween.tween_interval(float(order) * WALL_BUILD_STAGGER)
+			tween.tween_property(corner, "scale:y", 1.0, WALL_BUILD_TIME) \
+				.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+			order += 1
+
+
+func _animate_wall_visual(visual: Node3D, order: int) -> int:
+	if visual == null:
+		return order
+	var is_box := visual is MeshInstance3D \
+		and (visual as MeshInstance3D).mesh is BoxMesh
+	visual.scale = Vector3(visual.scale.x, 0.001, visual.scale.z)
+	if is_box:
+		visual.position.y = -wall_height * 0.5
+
+	var tween := create_tween()
+	tween.bind_node(visual)
+	tween.tween_interval(float(order) * WALL_BUILD_STAGGER)
+	tween.tween_property(visual, "scale:y", 1.0, WALL_BUILD_TIME) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	if is_box:
+		tween.parallel().tween_property(visual, "position:y", 0.0, WALL_BUILD_TIME) \
+			.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	return order + 1
+
+
+func _piece_visual_node(piece: BuildPiece) -> Node3D:
+	var direct := piece.get_node_or_null("MeshInstance3D") as MeshInstance3D
+	if direct != null:
+		return direct
+	for child in piece.get_children():
+		if child is Node3D and not (child is CollisionShape3D) \
+				and not (child is CollisionObject3D):
+			return child as Node3D
+	return null
+
+
+## Efecto de obra de los pisos: cada celda aparece con un pequeno "pop"
+## (escala en el plano) en el mismo orden en que se pintaron.
+func _animate_floors_build(cells: Array[Vector2i]) -> void:
+	if _active_map_file != "":
+		return
+	var order := 0
+	for cell in cells:
+		var piece := _floors.get(cell) as BuildPiece
+		if piece == null or not is_instance_valid(piece):
+			continue
+		_animate_floor_visual(_piece_visual_node(piece), order)
+		order += 1
+
+
+func _animate_floor_visual(visual: Node3D, order: int) -> void:
+	if visual == null:
+		return
+	var original := visual.scale
+	visual.scale = Vector3(original.x * 0.01, original.y, original.z * 0.01)
+
+	var tween := create_tween()
+	tween.bind_node(visual)
+	tween.tween_interval(float(order) * FLOOR_BUILD_STAGGER)
+	tween.tween_property(visual, "scale", original, FLOOR_BUILD_TIME) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 
 
 func _create_ui() -> void:

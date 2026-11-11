@@ -201,6 +201,43 @@ modelo, y recorta **todas** las mallas de la pieza (un `.blend` puede importarse
 dividido en varios objetos). Así los brazos terminan justo en el borde de la
 celda aunque el modelo se mueva o se divida al editar texturas en Blender.
 
+### Previsualizaciones de colocación
+
+Las previsualizaciones usan **la malla real del modelo** que se va a colocar en
+lugar de una caja genérica, así que el fantasma coincide en origen, escala y
+rotación con la pieza final. La excepción son los pisos, que usan una
+previsualización plana propia (ver abajo).
+
+- `shaders/ghost.gdshader` aplica el aspecto holográfico (borde Fresnel, líneas
+  de escaneo y pulso) a todas las mallas del modelo. Se usa en paredes y objetos.
+- **Pisos**: clic y arrastrar dibuja un **rectángulo** de celdas. La
+  previsualización es **plana** y propia (`shaders/floor_preview.gdshader`), no
+  el holograma: un piso se lee mejor como superficie. Un único quad cubre todo
+  el rectángulo y dibuja:
+  - el **borde exterior** exacto del área (siempre visible desde el primer clic),
+  - la **cuadrícula** por celda,
+  - un **relleno tenue** del área objetivo y un relleno más sólido de las celdas
+    ya pintadas, en orden de barrido fila por fila,
+  - la **celda actual** (borde de avance) con contorno y relleno más fuertes,
+  - en **rojo** las celdas que no se pueden colocar (por ejemplo, ya ocupadas).
+
+  Al soltar, las celdas confirmadas aparecen con un pequeño "pop" en el orden en
+  que se pintaron.
+- **Paredes**: la previsualización usa `wall_scene`. Al arrastrar, los tramos se
+  construyen **en orden**, desde el primer clic hasta el cursor; cada tramo crece
+  desde el suelo con el parámetro `reveal`. El tramo actual (el último bajo el
+  cursor) usa `strength = 1`, por lo que se ve más sólido que el resto. Al
+  soltar, las paredes confirmadas repiten el crecimiento desde el suelo, una
+  detrás de otra, para cerrar el efecto de obra. La colisión se crea completa
+  desde el principio para no afectar al NavMesh.
+- **Objetos**: la previsualización usa la escena del `BuildItem` (por ejemplo la
+  silla con su asiento, respaldo y patas), gira con la tecla `R` y se coloca en
+  la misma celda y con el mismo desplazamiento que la pieza real. Al borrar, se
+  muestra el modelo del objeto que hay bajo el cursor.
+- Las previsualizaciones son puramente visuales: a los modelos se les quitan
+  scripts (para que un `SmartObject` no se registre), colisiones, luces, cámaras
+  y animaciones.
+
 ## Guardado por nivel
 
 En **cualquier momento** (dentro o fuera del modo construccion), pulsar **`°`**
@@ -230,6 +267,8 @@ scripts/sistemas/build/
 ├── build_piece.gd           Script base de las piezas colocadas
 ├── build_input.gd           Acciones de entrada creadas en runtime
 ├── shaders/grid.gdshader    Grilla anti-aliased
+├── shaders/ghost.gdshader   Fantasma holografico de paredes y objetos
+├── shaders/floor_preview.gdshader  Vista previa plana del pincel de pisos
 └── prefabs/
     ├── floor_tile.tscn
     └── wall_segment.tscn
