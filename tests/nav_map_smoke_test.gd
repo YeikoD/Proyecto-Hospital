@@ -4,7 +4,7 @@ extends SceneTree
 ## Ejecutar:
 ##   Godot --headless --path . --script res://tests/nav_map_smoke_test.gd
 ##
-## Carga el nivel real (`scenes/build_demo.tscn`) con su construccion guardada y
+## Carga el nivel real (`scenes/demos/build_demo.tscn`) con su construccion guardada y
 ## verifica que:
 ##   - el NavMesh cubre el terreno, no solo la grilla;
 ##   - hay camino desde fuera de la grilla hasta una silla;
@@ -19,9 +19,9 @@ func _initialize() -> void:
 
 
 func _run() -> void:
-	var packed: PackedScene = load("res://scenes/build_demo.tscn")
+	var packed: PackedScene = load("res://scenes/demos/build_demo.tscn")
 	if packed == null:
-		_fail("no se pudo cargar scenes/build_demo.tscn")
+		_fail("no se pudo cargar scenes/demos/build_demo.tscn")
 		_finish()
 		return
 

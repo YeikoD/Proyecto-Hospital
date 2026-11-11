@@ -1,0 +1,24 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" uid="uid://dm2mj1ceh156" path="res://scripts/systems/build/build_piece.gd" id="1_piece"]
+
+[sub_resource type="StandardMaterial3D" id="Material_wall"]
+albedo_color = Color(0.82, 0.79, 0.71, 1)
+metallic = 0.0
+roughness = 0.9
+
+[sub_resource type="BoxMesh" id="Mesh_wall"]
+material = SubResource("Material_wall")
+size = Vector3(1, 2.8, 0.2)
+
+[sub_resource type="BoxShape3D" id="Shape_wall"]
+size = Vector3(1, 2.8, 0.2)
+
+[node name="WallSegment" type="StaticBody3D"]
+script = ExtResource("1_piece")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="."]
+mesh = SubResource("Mesh_wall")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+shape = SubResource("Shape_wall")

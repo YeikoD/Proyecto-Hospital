@@ -45,13 +45,13 @@ modelo visual de forma suave durante la animación de entrada.
 ## Archivos
 
 ```
-scripts/sistemas/smart_objects/
+scripts/systems/smart_objects/
 ├── smart_object.gd            Nodo colocado: slots, reservas y estados
 ├── smart_object_def.gd        Acciones que anuncia el objeto
 ├── affordance_def.gd          Una acción concreta ("sit", "sleep", ...)
 ├── smart_object_registry.gd   Índice estático global + claim_best()
 └── prefabs/chair.tscn         Silla de ejemplo (Slot + POI + Approach)
-scripts/Characters/npc/
+scripts/characters/npc/
 ├── npc_agent.gd               Locomoción + señal `arrived` + frozen
 ├── npc_brain.gd               Necesidades → utilidad → FSM
 ├── npc_animation_manager.gd   Secuencias enter/loop/exit + retargeting + POI
@@ -228,9 +228,9 @@ negativo mantiene al NPC en loop hasta que algo lo interrumpa.
 `data/smart_objects/sit_animations.tres`:
 
 ```
-enter_source = "res://anim/sitting_enter_fit_anim_only.glb"
-loop_source  = "res://anim/sitting_idle_loop_fit_anim_only.glb"
-exit_source  = "res://anim/sitting_exit_fit_anim_only.glb"
+enter_source = "res://assets/animations/sitting_enter_fit_anim_only.glb"
+loop_source  = "res://assets/animations/sitting_idle_loop_fit_anim_only.glb"
+exit_source  = "res://assets/animations/sitting_exit_fit_anim_only.glb"
 ```
 
 y `sit.tres` referencia ese set con `animation_set`. Con eso, cualquier mueble
@@ -244,7 +244,7 @@ Para otro mueble (cama, ducha, máquina) alcanza con:
 4. agregar `POI_<slot>` y `Approach_<slot>` al prefab.
 
 Si el mueble sólo necesita una animación sostenida que ya existe en
-`anim/player_library.tres`, se puede seguir usando `AffordanceDef.animation`
+`assets/animations/player_library.tres`, se puede seguir usando `AffordanceDef.animation`
 con `NpcAgent.play_interaction()`.
 
 ## Integración con Build y NavMesh
@@ -261,7 +261,7 @@ con `NpcAgent.play_interaction()`.
 ## Demo
 
 ```powershell
-Godot.exe --path . res://scenes/demo/smart_object_demo.tscn
+Godot.exe --path . res://scenes/demos/smart_object_demo.tscn
 ```
 
 Cuatro NPC con la necesidad `rest` alta buscan las sillas repartidas por las

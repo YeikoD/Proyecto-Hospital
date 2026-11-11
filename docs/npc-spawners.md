@@ -25,7 +25,7 @@ Spawner (POI)
 
 ## Cómo usarlo
 
-1. Arrastrá `scripts/Characters/npc/npc_spawner.tscn` a la escena. Cada
+1. Arrastrá `scripts/characters/npc/npc_spawner.tscn` a la escena. Cada
    instancia es un **POI de aparición** (se ve como un cilindro celeste).
 2. Poné dos (o los que quieras) en zonas caminables del NavMesh. Pueden estar
    fuera de la grilla (terreno, patio) si `BuildNavigation` hornea el mapa
@@ -84,14 +84,14 @@ Señales: `npc_spawned(npc)`, `npc_despawned(npc)`.
 ## Demo
 
 ```powershell
-Godot.exe --path . res://scenes/demo/npc_spawner_demo.tscn
+Godot.exe --path . res://scenes/demos/npc_spawner_demo.tscn
 ```
 
 La demo construye dos habitaciones, coloca 5 sillas y tiene **2 POI de
 spawner**. En pantalla se ve `NPCs vivos: N / 5`. Cada NPC aparece, camina a
 una silla, se sienta y vuelve al spawner más cercano para desaparecer.
 
-El script `scenes/demo/npc_spawner_demo.gd` extiende `nav_demo.gd`: reutiliza
+El script `scenes/demos/npc_spawner_demo.gd` extiende `nav_demo.gd`: reutiliza
 la construcción de habitaciones y sólo agrega sillas y el HUD del spawner.
 
 ## Pruebas

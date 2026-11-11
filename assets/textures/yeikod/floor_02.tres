@@ -1,0 +1,7 @@
+[gd_resource type="StandardMaterial3D" format=3 uid="uid://do6gwhc1uj8jc"]
+
+[ext_resource type="Texture2D" uid="uid://dto1qbed7xggr" path="res://assets/textures/yeikod/floor_01.png" id="1_rt8al"]
+
+[resource]
+albedo_texture = ExtResource("1_rt8al")
+metallic_specular = 0.0

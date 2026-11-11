@@ -12,9 +12,9 @@ func _initialize() -> void:
 
 
 func _run() -> void:
-	var scene: PackedScene = load("res://scenes/demo/nav_demo.tscn")
+	var scene: PackedScene = load("res://scenes/demos/nav_demo.tscn")
 	if scene == null:
-		_fail("no se pudo cargar scenes/demo/nav_demo.tscn")
+		_fail("no se pudo cargar scenes/demos/nav_demo.tscn")
 		quit(1)
 		return
 

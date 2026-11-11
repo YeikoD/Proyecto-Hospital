@@ -9,5 +9,8 @@
 *.TMP
 *~RF*
 
+# Copias de seguridad automaticas de Blender
+*.blend1
+
 # Partidas de construccion guardadas por nivel (BuildController)
 *.build.json

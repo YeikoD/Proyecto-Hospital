@@ -1,8 +1,0 @@
-[gd_resource type="StandardMaterial3D" format=3 uid="uid://bptdav0uwlji7"]
-
-[ext_resource type="Texture2D" uid="uid://cl1y4xu1s8jup" path="res://maps/textures/yeikod/grass_ground_mix_02.png" id="1_bwbgi"]
-
-[resource]
-albedo_texture = ExtResource("1_bwbgi")
-metallic_specular = 0.0
-texture_filter = 2

@@ -1,10 +1,10 @@
-﻿[gd_resource type="Resource" script_class="BuildItem" format=3]
+[gd_resource type="Resource" script_class="BuildItem" format=3]
 
-[ext_resource type="Script" path="res://scripts/sistemas/build/build_item.gd" id="1_script"]
-[ext_resource type="PackedScene" path="res://models/build/construccion/wall/wall_basic_IZQ.glb" id="2_izq"]
-[ext_resource type="PackedScene" path="res://models/build/construccion/wall/wall_basic_DER.glb" id="3_der"]
+[ext_resource type="Script" path="res://scripts/systems/build/build_item.gd" id="1_script"]
+[ext_resource type="PackedScene" path="res://assets/models/construction/wall/wall_basic_IZQ.glb" id="2_izq"]
+[ext_resource type="PackedScene" path="res://assets/models/construction/wall/wall_basic_DER.glb" id="3_der"]
 [ext_resource type="Texture2D" path="res://icon.svg" id="4_preview"]
-[ext_resource type="PackedScene" path="res://models/build/construccion/wall/wall_basic.glb" id="5_scene"]
+[ext_resource type="PackedScene" path="res://assets/models/construction/wall/wall_basic.glb" id="5_scene"]
 
 [resource]
 script = ExtResource("1_script")

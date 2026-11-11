@@ -14,9 +14,9 @@ func _initialize() -> void:
 
 
 func _run() -> void:
-	var demo_scene: PackedScene = load("res://scenes/build_demo.tscn")
+	var demo_scene: PackedScene = load("res://scenes/demos/build_demo.tscn")
 	if demo_scene == null:
-		_fail("no se pudo cargar scenes/build_demo.tscn")
+		_fail("no se pudo cargar scenes/demos/build_demo.tscn")
 		quit(1)
 		return
 

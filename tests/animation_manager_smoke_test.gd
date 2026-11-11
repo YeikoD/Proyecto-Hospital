@@ -17,7 +17,7 @@ func _initialize() -> void:
 
 
 func _run() -> void:
-	var scene: PackedScene = load("res://scripts/Characters/npc/npc.tscn")
+	var scene: PackedScene = load("res://scripts/characters/npc/npc.tscn")
 	if scene == null:
 		_fail("no se pudo cargar npc.tscn")
 		quit(1)

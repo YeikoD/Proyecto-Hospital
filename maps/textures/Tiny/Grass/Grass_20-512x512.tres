@@ -1,8 +1,0 @@
-[gd_resource type="StandardMaterial3D" format=3 uid="uid://cl23cvr0l0hfg"]
-
-[ext_resource type="Texture2D" uid="uid://cu1bih0bonxix" path="res://maps/textures/Delven/Tiny/Grass/Grass_20-512x512.png" id="1_rl65h"]
-
-[resource]
-albedo_texture = ExtResource("1_rl65h")
-metallic_specular = 0.0
-texture_filter = 2

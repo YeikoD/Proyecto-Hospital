@@ -1,0 +1,65 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scenes/demos/smart_object_demo.gd" id="1_demo"]
+[ext_resource type="PackedScene" uid="uid://cyeiic54bgiqd" path="res://scripts/characters/player/fps_player.tscn" id="2_player"]
+[ext_resource type="PackedScene" path="res://scripts/systems/build/build_system.tscn" id="3_build"]
+[ext_resource type="PackedScene" path="res://scripts/characters/npc/npc.tscn" id="4_npc"]
+
+[sub_resource type="Environment" id="Environment_main"]
+background_mode = 1
+background_color = Color(0.52, 0.66, 0.8, 1)
+ambient_light_source = 2
+ambient_light_color = Color(0.6, 0.66, 0.74, 1)
+ambient_light_energy = 0.65
+tonemap_mode = 2
+
+[sub_resource type="StandardMaterial3D" id="Material_ground"]
+albedo_color = Color(0.26, 0.32, 0.25, 1)
+roughness = 0.95
+
+[sub_resource type="PlaneMesh" id="Mesh_ground"]
+material = SubResource("Material_ground")
+size = Vector2(80, 80)
+
+[sub_resource type="BoxShape3D" id="Shape_ground"]
+size = Vector3(80, 0.5, 80)
+
+[node name="SmartObjectDemo" type="Node3D"]
+script = ExtResource("1_demo")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_main")
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.76604444, -0.52654076, 0.3686878, 0, 0.57357645, 0.81915206, -0.6427876, -0.62750685, 0.43938506, 0, 0, 0)
+light_energy = 1.15
+shadow_enabled = true
+
+[node name="Ground" type="StaticBody3D" parent="."]
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Ground"]
+mesh = SubResource("Mesh_ground")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Ground"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.25, 0)
+shape = SubResource("Shape_ground")
+
+[node name="FPSPlayer" parent="." instance=ExtResource("2_player")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.5, 0.05, 12)
+
+[node name="BuildSystem" parent="." instance=ExtResource("3_build")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.02, 0)
+
+[node name="NPCs" type="Node3D" parent="."]
+
+[node name="NPC1" parent="NPCs" instance=ExtResource("4_npc")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 4.5, 0.1, 4.5)
+
+[node name="NPC2" parent="NPCs" instance=ExtResource("4_npc")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 9.5, 0.1, 5.5)
+
+[node name="NPC3" parent="NPCs" instance=ExtResource("4_npc")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5.5, 0.1, 7.5)
+
+[node name="NPC4" parent="NPCs" instance=ExtResource("4_npc")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8.5, 0.1, 7.5)

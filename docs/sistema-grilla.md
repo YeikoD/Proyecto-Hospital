@@ -3,10 +3,10 @@
 | Campo | Valor |
 | --- | --- |
 | Proyecto | Proyecto Hospital (Godot 4.7) |
-| Módulo | `res://scripts/sistemas/build/` |
-| Versión del documento | 1.1 |
+| Módulo | `res://scripts/systems/build/` |
+| Versión del documento | 1.2 |
 | Estado | Implementado y verificado (construcción + navegación) |
-| Fecha | 2026-11-08 |
+| Fecha | 2026-11-11 |
 | Motor verificado | Godot 4.7.2 stable |
 
 ---
@@ -48,9 +48,6 @@ varias celdas, plantas múltiples, puertas/ventanas, guardado/carga y catálogo 
 | Entrada | Acción |
 | --- | --- |
 | `B` | Entrar / salir del modo construcción |
-| `1` | Herramienta suelo |
-| `2` | Herramienta pared |
-| `3` | Herramienta borrar |
 | Clic izquierdo | Colocar / borrar (arrastrar pinta varias celdas) |
 | Clic derecho o central + arrastrar | Orbitar la cámara |
 | Rueda | Zoom |
@@ -77,20 +74,20 @@ build_system.tscn
 
 | Archivo | Responsabilidad |
 | --- | --- |
-| `scripts/sistemas/build/build_grid.gd` | Modelo geométrico puro: celdas, bordes, límites, centros, rotación y overlay. |
-| `scripts/sistemas/build/build_controller.gd` | Orquestador: entrada, herramientas, hover, ghosts, instanciación y borrado. |
-| `scripts/sistemas/build/build_navigation.gd` | Configura el NavMesh, escucha cambios de piezas y hornea con debounce. |
-| `scripts/sistemas/build/build_camera.gd` | Cámara orbital con pan, zoom y encuadre inicial. |
-| `scripts/sistemas/build/build_piece.gd` | Clase base de una pieza colocada; redimensiona malla y colisión. |
-| `scripts/sistemas/build/build_input.gd` | Registro en runtime de las acciones de entrada. |
-| `scripts/sistemas/build/shaders/grid.gdshader` | Dibujo anti-aliased de la grilla sobre un plano. |
-| `scripts/sistemas/build/prefabs/floor_tile.tscn` | Prefab de suelo (caja 1×0.1×1). |
-| `scripts/sistemas/build/prefabs/wall_segment.tscn` | Prefab de pared (caja 1×2.8×0.2). |
-| `scripts/sistemas/build/build_system.tscn` | Escena ensamblada lista para arrastrar a un nivel. |
-| `scripts/Characters/npc/npc_agent.gd` | `CharacterBody3D` con `NavigationAgent3D`, deambular y animación. |
-| `scripts/Characters/npc/npc.tscn` | Prefab de NPC con el modelo y las animaciones del jugador. |
-| `scenes/build_demo.tscn` | Escena de demostración independiente. |
-| `scenes/demo/nav_demo.tscn` | Demo con habitaciones, puertas, NPC y NavMesh. |
+| `scripts/systems/build/build_grid.gd` | Modelo geométrico puro: celdas, bordes, límites, centros, rotación y overlay. |
+| `scripts/systems/build/build_controller.gd` | Orquestador: entrada, herramientas, hover, ghosts, instanciación y borrado. |
+| `scripts/systems/build/build_navigation.gd` | Configura el NavMesh, escucha cambios de piezas y hornea con debounce. |
+| `scripts/systems/build/build_camera.gd` | Cámara orbital con pan, zoom y encuadre inicial. |
+| `scripts/systems/build/build_piece.gd` | Clase base de una pieza colocada; redimensiona malla y colisión. |
+| `scripts/systems/build/build_input.gd` | Registro en runtime de las acciones de entrada. |
+| `scripts/systems/build/shaders/grid.gdshader` | Dibujo anti-aliased de la grilla sobre un plano. |
+| `scripts/systems/build/prefabs/floor_tile.tscn` | Prefab de suelo (caja 1×0.1×1). |
+| `scripts/systems/build/prefabs/wall_segment.tscn` | Prefab de pared (caja 1×2.8×0.2). |
+| `scripts/systems/build/build_system.tscn` | Escena ensamblada lista para arrastrar a un nivel. |
+| `scripts/characters/npc/npc_agent.gd` | `CharacterBody3D` con `NavigationAgent3D`, deambular y animación. |
+| `scripts/characters/npc/npc.tscn` | Prefab de NPC con el modelo y las animaciones del jugador. |
+| `scenes/demos/build_demo.tscn` | Escena de demostración independiente. |
+| `scenes/demos/nav_demo.tscn` | Demo con habitaciones, puertas, NPC y NavMesh. |
 | `tests/build_smoke_test.gd` | Prueba automática headless del núcleo. |
 | `tests/nav_smoke_test.gd` | Prueba del NavMesh, puertas y rebake. |
 
@@ -219,6 +216,29 @@ Vector3(
 
 - `center_point`: centro de toda la grilla, usado para encuadrar la cámara.
 - `plane_global_y`: `global_position.y + plane_y`.
+
+#### Expansión de la grilla
+
+El origen (celda `0,0`) es fijo, así que la grilla crece hacia `+X` y `+Z`:
+
+```gdscript
+signal grid_resized(cells_x: int, cells_z: int)
+
+func set_grid_size(new_cells_x: int, new_cells_z: int) -> void
+func expand(add_x: int, add_z: int) -> void
+func expand_if_near_edge(cell: Vector2i) -> bool
+```
+
+- `set_grid_size` / `expand`: cambian el tamaño y refrescan el overlay al instante.
+- `expand_if_near_edge`: si el cursor está en una de las últimas
+  `expand_margin` celdas, añade `expand_step` celdas en ese eje.
+- La grilla es **fija por defecto** (`auto_expand = false`). Para expandirla
+  desde el inspector:
+  - editar `cells_x` / `cells_z`, o
+  - usar los botones **Expandir +X**, **Expandir +Z** y **Expandir ambos**, que
+    añaden `expand_step` celdas.
+- El crecimiento automático es opcional: activar `auto_expand` y ajustar
+  `expand_step` / `expand_margin`.
 
 ### 5.2 Detección del borde más cercano
 
@@ -492,11 +512,10 @@ teclado.
 | Acción | Tecla |
 | --- | --- |
 | `build_toggle` | `B` |
-| `build_tool_floor` | `1` |
-| `build_tool_wall` | `2` |
-| `build_tool_erase` | `3` |
+| `build_rotate` | `R` |
 | `build_raise` | `E` |
 | `build_lower` | `Q` |
+| `build_save` | `°` / `º` / `ª` |
 
 También se reutilizan las acciones del jugador `move_left`, `move_right`,
 `move_forward`, `move_backward` y `ui_cancel`.
@@ -557,10 +576,10 @@ también se ve en el editor.
 | --- | --- | --- |
 | `cell_size` | `1.0` | Tamaño de celda en metros |
 | `grid_extent` | `(32, 32)` | Cantidad de celdas |
-| `fill_color` | azul tenue | Relleno del plano |
-| `minor_color` | celeste | Líneas menores |
-| `major_color` | celeste claro | Líneas mayores |
-| `border_color` | cian | Borde del área construible |
+| `fill_color` | blanco muy tenue | Relleno del plano |
+| `minor_color` | blanco tenue | Líneas menores |
+| `major_color` | blanco | Líneas mayores |
+| `border_color` | blanco brillante | Borde del área construible |
 | `major_every` | `5` | Una línea mayor cada N celdas |
 | `line_width` | `1.2` | Grosor de línea en píxeles |
 | `show_border` | `true` | Dibuja el perímetro |
@@ -625,15 +644,18 @@ Valores por defecto del controlador: `floor_thickness = 0.1`,
 
 ### 12.1 Escena lista para usar
 
-1. Añadir `scripts/sistemas/build/build_system.tscn` como hijo de la escena del nivel.
+1. Añadir `scripts/systems/build/build_system.tscn` como hijo de la escena del nivel.
 2. Ubicar el nodo `BuildSystem` (o `BuildGrid`) a la altura del plano de
    construcción.
 3. Ajustar en `BuildGrid`: `cells_x`, `cells_z`, `cell_size`, `plane_y`.
+   La grilla es fija por defecto; para agrandarla usa los botones
+   **Expandir +X / +Z / ambos** del inspector, edita `cells_x` / `cells_z`, o
+   llama a `set_grid_size()` / `expand()`. El modo `auto_expand` es opcional.
 4. Opcional en `BuildController`: `wall_height`, `wall_thickness`,
    `floor_thickness`, `floor_scene`, `wall_scene`, `show_help`,
    `start_in_build_mode`.
 5. La navegación ya viene incluida: `NavRegion` contiene `PlacedPieces` y
-   `BuildNavigation` hornea el NavMesh. Para NPCs, instanciar `scripts/Characters/npc/npc.tscn`.
+   `BuildNavigation` hornea el NavMesh. Para NPCs, instanciar `scripts/characters/npc/npc.tscn`.
 
 La escena debe contener un `FPSController` (jugador del proyecto).
 
@@ -657,10 +679,9 @@ estar dentro de `NavRegion`.
 
 ### 12.3 Demo
 
-`scenes/build_demo.tscn` contiene suelo plano de 80×80, `WorldEnvironment`, sol
-direccional, `FPSPlayer` y `BuildSystem` a `y = 0.02`. Es independiente de
-`scenes/isla_asercion.tscn`, por lo que sirve para probar sin tocar el nivel
-principal.
+`scenes/demos/build_demo.tscn` contiene suelo plano de 80×80, `WorldEnvironment`, sol
+direccional, `FPSPlayer` y `BuildSystem` a `y = 0.02`. Es independiente del
+mapa de la isla, por lo que sirve para probar sin tocar el nivel principal.
 
 ### 12.4 Navegación
 
@@ -671,14 +692,14 @@ los suelos son caminables y las paredes recortan el área. Un
 `filter_baking_aabb` limita la altura para que los techos de las paredes no se
 vuelvan caminables.
 
-Los NPC usan `scripts/Characters/npc/npc.tscn` (`NpcAgent` + `NavigationAgent3D`) y se mueven con:
+Los NPC usan `scripts/characters/npc/npc.tscn` (`NpcAgent` + `NavigationAgent3D`) y se mueven con:
 
 ```gdscript
 npc.move_to(Vector3(10.0, 0.0, 4.0))
 ```
 
 El prefab reutiliza el modelo y las animaciones del jugador, sin el controlador
-FPS, la cámara ni la linterna. La demo `scenes/demo/nav_demo.tscn` muestra el sistema
+FPS, la cámara ni la linterna. La demo `scenes/demos/nav_demo.tscn` muestra el sistema
 completo. El detalle técnico está en `docs/navegacion-npcs.md`.
 
 ---
@@ -694,6 +715,9 @@ var cells_x: int
 var cells_z: int
 var plane_y: float
 var show_border: bool
+var auto_expand: bool
+var expand_step: int
+var expand_margin: int
 
 # Celdas
 func cell_from_world(world: Vector3) -> Vector2i
@@ -702,6 +726,12 @@ func clamp_cell(cell: Vector2i) -> Vector2i
 func cell_center(cell: Vector2i) -> Vector3
 func plane_global_y() -> float
 func center_point() -> Vector3
+
+# Tamaño / expansión
+func set_grid_size(new_cells_x: int, new_cells_z: int) -> void
+func expand(add_x: int, add_z: int) -> void
+func expand_if_near_edge(cell: Vector2i) -> bool
+signal grid_resized(cells_x: int, cells_z: int)
 
 # Bordes de pared
 func wall_from_world(world: Vector3) -> Vector3i
@@ -823,7 +853,7 @@ Godot.exe --headless --path . --script res://tests/nav_smoke_test.gd
 
 Cubre:
 
-- Carga de `scenes/demo/nav_demo.tscn` y construcción del ejemplo.
+- Carga de `scenes/demos/nav_demo.tscn` y construcción del ejemplo.
 - Horneado del NavMesh desde las piezas (polígonos > 0).
 - Ausencia de superficies caminables sobre las paredes.
 - Camino entre habitaciones y por una puerta de 1 celda.
@@ -852,6 +882,8 @@ NAV_SMOKE_TEST_OK
 
 - **Grilla plana:** no se adapta al terreno. Debe ubicarse en una zona plana o
   a la altura del suelo.
+- **Expansión solo hacia +X/+Z:** el origen (celda `0,0`) no se mueve, así que
+  `set_grid_size` / `expand` no agrandan hacia coordenadas negativas.
 - **Sin rotación del nodo:** la matemática asume ejes alineados al mundo.
 - **Una pieza por celda/borde:** no hay muros compuestos ni piezas de varias
   celdas.
@@ -888,19 +920,19 @@ NAV_SMOKE_TEST_OK
 
 ## 17. Referencias
 
-- `scripts/sistemas/build/build_grid.gd` — geometría y overlay.
-- `scripts/sistemas/build/build_controller.gd` — lógica de construcción.
-- `scripts/sistemas/build/build_camera.gd` — cámara orbital.
-- `scripts/sistemas/build/build_piece.gd` — pieza base.
-- `scripts/sistemas/build/build_input.gd` — acciones de entrada.
-- `scripts/sistemas/build/shaders/grid.gdshader` — shader de grilla.
-- `scripts/sistemas/build/build_system.tscn` — escena ensamblada.
-- `scripts/sistemas/build/build_navigation.gd` — horneado del NavMesh.
-- `scripts/sistemas/build/README.md` — guía rápida de uso.
-- `scripts/Characters/npc/npc_agent.gd` — movimiento y deambular de NPC.
-- `scripts/Characters/npc/npc.tscn` — prefab de NPC con modelo/animaciones del jugador.
-- `scenes/build_demo.tscn` — demo ejecutable.
-- `scenes/demo/nav_demo.tscn` — demo de navegación.
+- `scripts/systems/build/build_grid.gd` — geometría y overlay.
+- `scripts/systems/build/build_controller.gd` — lógica de construcción.
+- `scripts/systems/build/build_camera.gd` — cámara orbital.
+- `scripts/systems/build/build_piece.gd` — pieza base.
+- `scripts/systems/build/build_input.gd` — acciones de entrada.
+- `scripts/systems/build/shaders/grid.gdshader` — shader de grilla.
+- `scripts/systems/build/build_system.tscn` — escena ensamblada.
+- `scripts/systems/build/build_navigation.gd` — horneado del NavMesh.
+- `docs/construccion.md` — guía rápida de uso.
+- `scripts/characters/npc/npc_agent.gd` — movimiento y deambular de NPC.
+- `scripts/characters/npc/npc.tscn` — prefab de NPC con modelo/animaciones del jugador.
+- `scenes/demos/build_demo.tscn` — demo ejecutable.
+- `scenes/demos/nav_demo.tscn` — demo de navegación.
 - `tests/build_smoke_test.gd` — prueba automática de construcción.
 - `tests/nav_smoke_test.gd` — prueba automática de navegación.
 - `docs/navegacion-npcs.md` — documento técnico de navegación.

@@ -1,6 +1,6 @@
 [gd_resource type="Resource" script_class="AffordanceDef" load_steps=3 format=3]
 
-[ext_resource type="Script" path="res://scripts/sistemas/smart_objects/affordance_def.gd" id="1_script"]
+[ext_resource type="Script" path="res://scripts/systems/smart_objects/affordance_def.gd" id="1_script"]
 [ext_resource type="Resource" path="res://data/smart_objects/sit_animations.tres" id="2_anim"]
 
 [resource]

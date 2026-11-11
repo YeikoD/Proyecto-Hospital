@@ -1,0 +1,78 @@
+[gd_scene format=3 uid="uid://5o73yic3yabw"]
+
+[ext_resource type="Script" uid="uid://2ix5n7aarg8e" path="res://scenes/demos/build_demo.gd" id="1_i02tf"]
+[ext_resource type="PackedScene" path="res://scripts/systems/build/build_system.tscn" id="2_xqmpv"]
+[ext_resource type="PackedScene" uid="uid://cugrp5wwsuaqx" path="res://assets/models/levels/level_01/level_01.glb" id="4_wpo3d"]
+[ext_resource type="PackedScene" uid="uid://cyeiic54bgiqd" path="res://scripts/characters/player/fps_player.tscn" id="7_7jb6e"]
+[ext_resource type="PackedScene" path="res://scripts/characters/npc/npc_spawner.tscn" id="9_30ca6"]
+
+[sub_resource type="Environment" id="Environment_main"]
+background_mode = 1
+background_color = Color(0.52, 0.66, 0.8, 1)
+ambient_light_source = 2
+ambient_light_color = Color(0.6, 0.66, 0.74, 1)
+ambient_light_energy = 0.65
+reflected_light_source = 2
+tonemap_mode = 2
+fog_height = -1024.0
+
+[sub_resource type="StandardMaterial3D" id="Material_ground"]
+albedo_color = Color(0.26, 0.36, 0.22, 1)
+roughness = 0.95
+
+[sub_resource type="PlaneMesh" id="Mesh_ground"]
+material = SubResource("Material_ground")
+size = Vector2(80, 80)
+
+[sub_resource type="BoxShape3D" id="Shape_ground"]
+size = Vector3(80, 0.5, 80)
+
+[node name="BuildDemo" type="Node3D" unique_id=1611217203]
+script = ExtResource("1_i02tf")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=1704758513]
+environment = SubResource("Environment_main")
+
+[node name="Sun" type="DirectionalLight3D" parent="." unique_id=1292390063]
+transform = Transform3D(0.7660445, -0.52654076, 0.36868784, 0, 0.57357645, 0.819152, -0.64278764, -0.62750685, 0.4393851, 0, 0, 0)
+light_energy = 1.15
+shadow_transmittance_bias = -0.17
+shadow_opacity = 0.0
+shadow_blur = 0.0
+
+[node name="BuildSystem" parent="." unique_id=1715999772 instance=ExtResource("2_xqmpv")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.02, -25)
+
+[node name="BuildGrid" parent="BuildSystem" index="0"]
+cells_x = 25
+cells_z = 50
+
+[node name="Ground" type="StaticBody3D" parent="." unique_id=1667772600 groups=["navigation_static"]]
+transform = Transform3D(2.5, 0, 0, 0, 1, 0, 0, 0, 2.5, 0, 0, 0)
+visible = false
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Ground" unique_id=1284561626]
+mesh = SubResource("Mesh_ground")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Ground" unique_id=1205856417]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.25, 0)
+shape = SubResource("Shape_ground")
+
+[node name="FPSPlayer" parent="." unique_id=21838221 instance=ExtResource("7_7jb6e")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.05, 9)
+
+[node name="level_01" parent="." unique_id=644444840 instance=ExtResource("4_wpo3d")]
+
+[node name="NPCs" type="Node3D" parent="." unique_id=1638889886]
+
+[node name="Spawners" type="Node3D" parent="." unique_id=1638889887]
+
+[node name="SpawnerA" parent="Spawners" unique_id=654457107 instance=ExtResource("9_30ca6")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0.1, -57)
+npc_parent_path = NodePath("../NPCs")
+
+[node name="SpawnerB" parent="Spawners" unique_id=584634702 instance=ExtResource("9_30ca6")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.5, 0.1, 75.5)
+npc_parent_path = NodePath("../NPCs")
+
+[editable path="BuildSystem"]

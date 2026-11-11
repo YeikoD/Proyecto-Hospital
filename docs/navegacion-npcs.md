@@ -3,7 +3,7 @@
 | Campo | Valor |
 | --- | --- |
 | Proyecto | Proyecto Hospital (Godot 4.7) |
-| Módulos | `res://scripts/sistemas/build/`, `res://scripts/Characters/npc/` |
+| Módulos | `res://scripts/systems/build/`, `res://scripts/characters/npc/` |
 | Versión del documento | 1.0 |
 | Estado | Implementado y verificado |
 | Fecha | 2026-11-08 |
@@ -51,12 +51,12 @@ piezas.
 
 | Archivo | Responsabilidad |
 | --- | --- |
-| `scripts/sistemas/build/build_navigation.gd` | Configura el NavMesh, escucha cambios, aplica debounce y hornea. |
-| `scripts/sistemas/build/build_system.tscn` | Ensambla grilla, cámara, `NavRegion`, controlador y navegación. |
-| `scripts/sistemas/build/build_controller.gd` | Emite `pieces_changed` y expone la API de colocación. |
-| `scripts/Characters/npc/npc_agent.gd` | `CharacterBody3D` con `NavigationAgent3D`, deambular y animación. |
-| `scripts/Characters/npc/npc.tscn` | Prefab de NPC con el modelo y las animaciones del jugador. |
-| `scenes/demo/nav_demo.tscn` | Demo con habitaciones, puertas, 4 NPC y HUD. |
+| `scripts/systems/build/build_navigation.gd` | Configura el NavMesh, escucha cambios, aplica debounce y hornea. |
+| `scripts/systems/build/build_system.tscn` | Ensambla grilla, cámara, `NavRegion`, controlador y navegación. |
+| `scripts/systems/build/build_controller.gd` | Emite `pieces_changed` y expone la API de colocación. |
+| `scripts/characters/npc/npc_agent.gd` | `CharacterBody3D` con `NavigationAgent3D`, deambular y animación. |
+| `scripts/characters/npc/npc.tscn` | Prefab de NPC con el modelo y las animaciones del jugador. |
+| `scenes/demos/nav_demo.tscn` | Demo con habitaciones, puertas, 4 NPC y HUD. |
 | `tests/nav_smoke_test.gd` | Prueba headless del NavMesh y del rebake. |
 
 ---
@@ -192,7 +192,7 @@ hospital. Si el jugador borra todos los suelos, el mapa sigue siendo navegable
 
 ### 4.1 Prefab
 
-`scripts/Characters/npc/npc.tscn` replica la estructura del jugador, pero sin el controlador FPS,
+`scripts/characters/npc/npc.tscn` replica la estructura del jugador, pero sin el controlador FPS,
 la cámara, el hueso de cabeza ni la linterna:
 
 ```
@@ -323,7 +323,7 @@ _anim.sync_locomotion_points(speed, speed * 1.6)
 
 ## 5. Demo
 
-`scenes/demo/nav_demo.tscn`:
+`scenes/demos/nav_demo.tscn`:
 
 - Construye por código dos habitaciones de 4×6 celdas.
 - Incluye una puerta exterior de 2 celdas, una división central con puerta de
@@ -334,7 +334,7 @@ _anim.sync_locomotion_points(speed, speed * 1.6)
 
 Para probar:
 
-1. Ejecutar `scenes/demo/nav_demo.tscn`.
+1. Ejecutar `scenes/demos/nav_demo.tscn`.
 2. Observar a los NPC deambular y atravesar las puertas.
 3. Pulsar **B**, elegir pared (2) y cerrar una puerta.
 4. Al terminar el debounce, el NavMesh se rehornea y los NPC rodean el nuevo
@@ -350,7 +350,7 @@ Godot.exe --headless --path . --script res://tests/nav_smoke_test.gd
 
 La prueba:
 
-1. Carga `scenes/demo/nav_demo.tscn`.
+1. Carga `scenes/demos/nav_demo.tscn`.
 2. Verifica que se construyeron suelos y paredes.
 3. Espera el horneado y comprueba que hay polígonos.
 4. Verifica que ningún vértice caminable quede a la altura de las paredes.
@@ -372,7 +372,7 @@ NAV_SMOKE_TEST_OK
 Godot.exe --headless --path . --script res://tests/nav_map_smoke_test.gd
 ```
 
-Carga `scenes/build_demo.tscn` con su construcción guardada y verifica que el
+Carga `scenes/demos/build_demo.tscn` con su construcción guardada y verifica que el
 NavMesh llega fuera de la grilla, que existe camino desde el terreno hasta una
 silla y que la IA puede consultar la grilla activa para entrar por la celda más
 cercana.
@@ -419,12 +419,12 @@ NAV_MAP_SMOKE_TEST_OK
 
 ## 8. Referencias
 
-- `scripts/sistemas/build/build_navigation.gd`
-- `scripts/sistemas/build/build_system.tscn`
-- `scripts/sistemas/build/build_controller.gd`
-- `scripts/Characters/npc/npc_agent.gd`
-- `scripts/Characters/npc/npc.tscn`
-- `scenes/demo/nav_demo.tscn`
+- `scripts/systems/build/build_navigation.gd`
+- `scripts/systems/build/build_system.tscn`
+- `scripts/systems/build/build_controller.gd`
+- `scripts/characters/npc/npc_agent.gd`
+- `scripts/characters/npc/npc.tscn`
+- `scenes/demos/nav_demo.tscn`
 - `tests/nav_smoke_test.gd`
-- `scripts/sistemas/build/README.md`
+- `docs/construccion.md`
 - `docs/sistema-grilla.md`

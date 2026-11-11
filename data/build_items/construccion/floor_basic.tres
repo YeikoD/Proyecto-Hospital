@@ -1,7 +1,7 @@
 [gd_resource type="Resource" script_class="BuildItem" format=3 uid="uid://cqhikm7mvbsl2"]
 
-[ext_resource type="Script" uid="uid://dd6mq4ip22kt6" path="res://scripts/sistemas/build/build_item.gd" id="1_script"]
-[ext_resource type="PackedScene" uid="uid://dgt8j7cidss3v" path="res://models/build/construccion/floor/floor_exterior_01.glb" id="2_scene"]
+[ext_resource type="Script" uid="uid://dd6mq4ip22kt6" path="res://scripts/systems/build/build_item.gd" id="1_script"]
+[ext_resource type="PackedScene" uid="uid://dgt8j7cidss3v" path="res://assets/models/construction/floor/floor_exterior_01.glb" id="2_scene"]
 [ext_resource type="Texture2D" uid="uid://c4bwlescynher" path="res://icon.svg" id="3_preview"]
 
 [resource]

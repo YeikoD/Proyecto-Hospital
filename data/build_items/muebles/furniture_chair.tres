@@ -1,8 +1,8 @@
-﻿[gd_resource type="Resource" script_class="BuildItem" format=3]
+[gd_resource type="Resource" script_class="BuildItem" format=3]
 
-[ext_resource type="Script" path="res://scripts/sistemas/build/build_item.gd" id="1_script"]
+[ext_resource type="Script" path="res://scripts/systems/build/build_item.gd" id="1_script"]
 [ext_resource type="Texture2D" path="res://icon.svg" id="2_preview"]
-[ext_resource type="PackedScene" path="res://scripts/sistemas/smart_objects/prefabs/chair.tscn" id="3_scene"]
+[ext_resource type="PackedScene" path="res://scripts/systems/smart_objects/prefabs/chair.tscn" id="3_scene"]
 [ext_resource type="Resource" path="res://data/smart_objects/seat.tres" id="4_smart"]
 
 [resource]
