@@ -13,6 +13,9 @@ var is_wall := false
 var item_id: StringName = &""
 ## Rotación en pasos de 90° (objetos).
 var object_rotation_steps: int = 0
+## Desplazamiento fino (sub-grilla) del objeto respecto del centro de su
+## huella. Permite colocarlo con precision de medio metro.
+var sub_offset := Vector3.ZERO
 
 @onready var _mesh_instance: MeshInstance3D = get_node_or_null("MeshInstance3D")
 @onready var _collision: CollisionShape3D = get_node_or_null("CollisionShape3D")

@@ -97,17 +97,22 @@ func _populate_categories() -> void:
 
 	# Pestañas principales. "Construir" agrupa la obra base y, en el futuro,
 	# pinturas/baldosas. "Objetos" es una pestaña independiente.
-	var category_order := ["construir", "objetos"]
+	var category_order := ["construir", "zonas", "objetos"]
 	var category_titles := {
 		"construir": "Construir",
+		"zonas": "Zonas",
 		"objetos": "Objetos",
 	}
-	var sub_order := ["base", "pinturas", "baldosas", "aberturas", "muebles", "general"]
+	var sub_order := [
+		"base", "pinturas", "baldosas", "aberturas",
+		"pinceles", "muebles", "general",
+	]
 	var sub_titles := {
 		"base": "Base",
 		"pinturas": "Pinturas",
 		"baldosas": "Baldosas",
 		"aberturas": "Aberturas",
+		"pinceles": "Pinceles",
 		"muebles": "Muebles",
 		"general": "General",
 	}
@@ -305,6 +310,10 @@ static func _item_rank(item: BuildItem) -> int:
 			return 3
 		"erase_object":
 			return 10
+		"zone_paint":
+			return 0
+		"zone_erase":
+			return 1
 		_:
 			return 5
 

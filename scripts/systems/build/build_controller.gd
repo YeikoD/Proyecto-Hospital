@@ -10,7 +10,7 @@ extends Node3D
 ## inspector, asi que basta con anadir `scripts/systems/build/build_system.tscn` a una escena
 ## que tenga un FPSPlayer.
 
-enum Tool { FLOOR, WALL, OBJECT, ERASE }
+enum Tool { FLOOR, WALL, OBJECT, ERASE, ZONE, ZONE_ERASE }
 enum EraseKind { ALL, FLOOR, WALL, OBJECT }
 
 ## Se emite cuando cambia el conjunto de piezas colocadas (colocar, borrar o
@@ -19,6 +19,8 @@ signal pieces_changed
 ## Se emite al colocar / borrar un SmartObject (muebles, props interactivos).
 signal object_placed(object: Node)
 signal object_removed(object: Node)
+## Se emite al pintar, borrar o reasignar una zona (para la futura IA).
+signal zones_changed
 
 const FLOOR_PREFAB := preload("res://scripts/systems/build/prefabs/floor_tile.tscn")
 const WALL_PREFAB := preload("res://scripts/systems/build/prefabs/wall_segment.tscn")
@@ -39,8 +41,45 @@ const FLOOR_PREVIEW_FILL := Color(0.25, 1.0, 0.62)
 const FLOOR_PREVIEW_LINE := Color(0.72, 1.0, 0.92)
 const FLOOR_ERASE_FILL := Color(1.0, 0.3, 0.26)
 const FLOOR_ERASE_LINE := Color(1.0, 0.62, 0.56)
-## Altura de la previsualizacion de piso sobre el plano (por encima del suelo).
-const FLOOR_PREVIEW_LIFT := 0.09
+## Altura de la previsualizacion de piso sobre el plano. Al construir queda
+## pegada a la grilla; al borrar se sube sobre el suelo real para que el rojo
+## de la zona a eliminar se vea entero.
+const FLOOR_PREVIEW_LIFT := 0.03
+const FLOOR_ERASE_PREVIEW_LIFT := 0.075
+
+## Zonas logicas: se pintan sobre el piso y sirven para que la IA sepa que
+## hay en cada area. El tipo es solo un dato; la IA se conectara mas adelante.
+const ZONE_DEFAULT_TYPE := &"unassigned"
+const ZONE_TYPES := {
+	&"unassigned": {
+		"name": "Sin asignar",
+		"color": Color(0.72, 0.74, 0.82, 0.28),
+	},
+	&"hallway": {
+		"name": "Pasillos",
+		"color": Color(1.0, 0.8, 0.22, 0.52),
+	},
+	&"waiting": {
+		"name": "Sala de espera",
+		"color": Color(0.3, 0.62, 1.0, 0.52),
+	},
+	&"consult": {
+		"name": "Consultorio",
+		"color": Color(0.36, 0.95, 0.55, 0.52),
+	},
+}
+## El overlay de zonas va por encima del piso (0.0625) y el preview un poco
+## mas arriba para que se lea siempre.
+const ZONE_OVERLAY_LIFT := 0.07
+## El borde y las etiquetas se dibujan un poco mas arriba para no pelear con
+## el relleno translucido de la zona.
+const ZONE_BORDER_LIFT := 0.072
+const ZONE_LABEL_LIFT := 0.076
+const ZONE_BORDER_WIDTH := 0.06
+const ZONE_PREVIEW_LIFT := 0.078
+const ZONE_PREVIEW_FILL := Color(0.45, 0.62, 1.0)
+const ZONE_PREVIEW_LINE := Color(0.82, 0.9, 1.0)
+const ZONE_REVEAL_CELL_TIME := 0.04
 
 ## Fuerza del fantasma: las piezas ya dibujadas son suaves y la pieza actual
 ## (la que esta en el borde de avance) se ve mas solida.
@@ -93,11 +132,21 @@ var tool: Tool = Tool.FLOOR
 var erase_kind: EraseKind = EraseKind.ALL
 
 var _floors: Dictionary = {}
+## Celda -> altura de la cara superior de su piso (mundo). Alimenta la grilla
+## secundaria que se dibuja solo sobre los pisos colocados.
+var _floor_tops: Dictionary = {}
+## Evita reconstruir la grilla de pisos varias veces por lote.
+var _floor_grid_dirty := false
 var _walls: Dictionary = {}
 ## Celda primaria -> pieza. Para objetos de varias celdas, `_object_cells`
 ## guarda todas las celdas cubiertas (y sirve para colisiones de huella).
 var _objects: Dictionary = {}
 var _object_cells: Dictionary = {}
+
+## Zonas pintadas: celda -> id de zona, e id de zona -> tipo.
+var _zone_cells: Dictionary = {}
+var _zone_types: Dictionary = {}
+var _next_zone_id := 1
 
 ## Controllers vivos. La IA consulta la grilla activa sin autoload (igual que
 ## `SmartObjectRegistry`), asi funciona tambien en tests headless.
@@ -117,6 +166,33 @@ var _floor_preview_material: ShaderMaterial
 var _floor_preview_cells: Array[Vector2i] = []
 var _floor_preview_cols := 1
 var _floor_preview_rows := 1
+
+## Overlay de zonas (visible solo en modo construccion) y su pincel.
+var _zones_overlay: MeshInstance3D
+var _zones_material: StandardMaterial3D
+var _zone_labels_root: Node3D
+var _zone_preview: MeshInstance3D
+var _zone_preview_material: ShaderMaterial
+var _zone_preview_cells: Array[Vector2i] = []
+var _zone_preview_cols := 1
+var _zone_preview_rows := 1
+var _zone_preview_mask: ImageTexture
+var _zone_dragging := false
+var _zone_drag_erasing := false
+var _zone_drag_start := Vector2i.ZERO
+var _zone_drag_cells: Array[Vector2i] = []
+var _zone_drag_reveal := 0.0
+var _zone_drag_started_on: StringName = &""
+var _zone_menu_root: Control
+var _zone_menu: PanelContainer
+var _zone_menu_label: Label
+var _zone_menu_buttons: Dictionary = {}
+var _zone_menu_zone_id: StringName = &""
+var _zone_menu_open := false
+## Mientras dura una accion que pinta sobre el piso (piso, pared u objeto) las
+## zonas se ocultan; al soltar vuelven a mostrarse.
+var _zones_hidden_for_brush := false
+
 var _wall_ghost: Node3D
 var _object_ghost: Node3D
 
@@ -141,6 +217,9 @@ var _object_ghost_erasing := false
 
 var _hover_cell := Vector2i.ZERO
 var _hover_wall := Vector3i.ZERO
+## Desplazamiento fino (sub-grilla) del objeto bajo el cursor, relativo al
+## centro de su huella. Se calcula al mover el mouse con la herramienta OBJECT.
+var _hover_sub_offset := Vector3.ZERO
 var _hovering := false
 var _painting := false
 var _floor_dragging := false
@@ -262,6 +341,8 @@ func enter_build_mode() -> void:
 		build_camera.current = true
 
 	grid.visible = true
+	_update_zones_for_tool()
+	_rebuild_zones_overlay()
 	if build_menu != null:
 		build_menu.visible = true
 	_update_ui()
@@ -276,7 +357,13 @@ func exit_build_mode() -> void:
 	_painting = false
 	_hovering = false
 	_cancel_drags()
+	_close_zone_menu()
 	_hide_ghosts()
+	if _zones_overlay != null:
+		_zones_overlay.visible = false
+	if _zone_labels_root != null:
+		_zone_labels_root.visible = false
+	_zones_hidden_for_brush = false
 
 	if build_camera != null:
 		build_camera.current = false
@@ -302,6 +389,7 @@ func set_tool(new_tool: Tool) -> void:
 	if new_tool != tool:
 		_cancel_drags()
 	tool = new_tool
+	_update_zones_for_tool()
 	_update_ui()
 
 
@@ -315,6 +403,11 @@ func _cancel_drags() -> void:
 		_clear_floor_drag_preview()
 		_floor_dragging = false
 	_floor_drag_erasing = false
+	if _zone_dragging:
+		_clear_zone_drag_preview()
+		_zone_dragging = false
+	_zone_drag_erasing = false
+	_update_zones_for_tool()
 
 
 # --------------------------------------------------------------------------
@@ -357,6 +450,13 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not build_mode:
 		return
 
+	# Con el menu de zonas abierto, Esc solo cierra el menu.
+	if _zone_menu_open:
+		if event.is_action_pressed("ui_cancel"):
+			_close_zone_menu()
+			get_viewport().set_input_as_handled()
+		return
+
 	if event.is_action_pressed("ui_cancel"):
 		exit_build_mode()
 		get_viewport().set_input_as_handled()
@@ -367,6 +467,14 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _process(_delta: float) -> void:
 	if not build_mode:
+		return
+
+	# Mientras el menu de asignacion de zona esta abierto, no se interactua con
+	# el mundo (los botones del menu siguen recibiendo input normalmente).
+	if _zone_menu_open:
+		_hovering = false
+		_hide_ghosts()
+		_update_ui()
 		return
 
 	_hovering = _update_hover()
@@ -394,6 +502,16 @@ func _process(_delta: float) -> void:
 			_update_ui()
 			return
 
+	if _zone_dragging:
+		if pressed:
+			if _hovering:
+				_update_zone_drag(_delta)
+		else:
+			_finish_zone_drag()
+			_hide_ghosts()
+			_update_ui()
+			return
+
 	if not _hovering:
 		_painting = false
 		_hide_ghosts()
@@ -415,9 +533,13 @@ func _process(_delta: float) -> void:
 				_update_floor_drag(_delta)
 	elif tool == Tool.OBJECT:
 		# Un clic = un objeto. Arrastrar no debe llenar la sala de muebles.
-		# Ignorar clics sobre la UI (menú de items).
+		# Ignorar clics sobre la UI (menú de items). Las zonas se ocultan solo
+		# durante el clic de colocación y vuelven al soltar.
 		if pressed and not _painting and not over_ui:
+			_set_zones_hidden_for_brush(true)
 			_apply_tool()
+		elif not pressed and _painting:
+			_update_zones_for_tool()
 		_painting = pressed
 	elif tool == Tool.ERASE and erase_kind == EraseKind.FLOOR:
 		# Borrador de piso: igual que construir, pero el rectangulo elimina.
@@ -435,13 +557,33 @@ func _process(_delta: float) -> void:
 			if _wall_dragging:
 				_update_wall_drag(_delta)
 		_painting = pressed
+	elif tool == Tool.ZONE:
+		# Pincel de zonas: rectangulo, igual que el pincel de pisos.
+		if pressed:
+			if not _zone_dragging and not over_ui:
+				_start_zone_drag(false)
+			if _zone_dragging:
+				_update_zone_drag(_delta)
+		_painting = pressed
+	elif tool == Tool.ZONE_ERASE:
+		if pressed:
+			if not _zone_dragging and not over_ui:
+				_start_zone_drag(true)
+			if _zone_dragging:
+				_update_zone_drag(_delta)
+		_painting = pressed
 	else:
 		# Borrado de objetos o generico: pintar mientras se mantiene pulsado.
+		# Las zonas se ocultan solo durante el borrado y vuelven al soltar.
 		_painting = pressed
 		if _painting:
+			_set_zones_hidden_for_brush(true)
 			_apply_tool()
+		else:
+			_update_zones_for_tool()
 
 	_update_ghosts()
+	_update_zone_label_orientation()
 	_update_ui()
 
 
@@ -504,6 +646,7 @@ func rotate_object() -> void:
 func clear_all() -> void:
 	var had_pieces := not _floors.is_empty() or not _walls.is_empty() \
 		or not _objects.is_empty()
+	var had_zones := not _zone_cells.is_empty()
 	_clear_corner_pieces()
 	_wall_corner_path.clear()
 	_hidden_walls.clear()
@@ -514,11 +657,20 @@ func clear_all() -> void:
 	for piece: Node in _objects.values():
 		piece.queue_free()
 	_floors.clear()
+	_floor_tops.clear()
 	_walls.clear()
 	_objects.clear()
 	_object_cells.clear()
+	_zone_cells.clear()
+	_zone_types.clear()
+	_next_zone_id = 1
+	_close_zone_menu()
+	_rebuild_zones_overlay()
+	_request_floor_grid_refresh()
 	if had_pieces:
 		pieces_changed.emit()
+	if had_zones:
+		zones_changed.emit()
 
 
 ## Coloca un suelo por API (misma validación que la herramienta).
@@ -532,20 +684,23 @@ func place_wall(key: Vector3i) -> bool:
 
 
 ## Coloca el objeto seleccionado por API. `rotation_steps` = cuartos de vuelta.
-func place_object(cell: Vector2i, rotation_steps: int = -1) -> bool:
+func place_object(
+	cell: Vector2i, rotation_steps: int = -1, sub_offset: Vector3 = Vector3.ZERO
+) -> bool:
 	if _selected_object_item == null:
 		return false
 	var steps := _object_rotation if rotation_steps < 0 else rotation_steps
-	return _place_object(cell, _selected_object_item, steps)
+	return _place_object(cell, _selected_object_item, steps, sub_offset)
 
 
 ## Coloca un BuildItem de tipo objeto concreto (útil para tests y scripts).
 func place_object_item(
 	item: BuildItem,
 	cell: Vector2i,
-	rotation_steps: int = 0
+	rotation_steps: int = 0,
+	sub_offset: Vector3 = Vector3.ZERO
 ) -> bool:
-	return _place_object(cell, item, rotation_steps)
+	return _place_object(cell, item, rotation_steps, sub_offset)
 
 
 ## Borra por API respetando la prioridad de la herramienta (pared, luego suelo).
@@ -561,9 +716,14 @@ func _apply_tool() -> void:
 			_place_wall(_hover_wall)
 		Tool.OBJECT:
 			if _selected_object_item != null:
-				_place_object(_hover_cell, _selected_object_item, _object_rotation)
+				_place_object(_hover_cell, _selected_object_item, _object_rotation,
+					_hover_sub_offset)
 		Tool.ERASE:
 			_erase_at(_hover_cell, _hover_wall, erase_kind)
+		Tool.ZONE:
+			_paint_zone_cells([_hover_cell])
+		Tool.ZONE_ERASE:
+			_erase_zone_cells([_hover_cell])
 
 
 func _can_place_floor(cell: Vector2i) -> bool:
@@ -574,29 +734,94 @@ func _can_place_wall(key: Vector3i) -> bool:
 	return grid.is_wall_inside(key) and not _walls.has(key)
 
 
-func _can_place_object(cell: Vector2i, item: BuildItem) -> bool:
+## Huella efectiva del objeto segun su rotacion (cuartos de vuelta). Un objeto
+## de 2x1 pasa a ocupar 1x2 al rotarse 90 grados.
+func _object_footprint(item: BuildItem, rotation_steps: int = 0) -> Vector2i:
+	var footprint := Vector2i(maxi(item.footprint.x, 1), maxi(item.footprint.y, 1))
+	if wrapi(rotation_steps, 0, 4) % 2 == 1:
+		return Vector2i(footprint.y, footprint.x)
+	return footprint
+
+
+## Desplazamiento desde el centro de la celda ancla hasta el centro de la
+## huella. Para huellas pares el objeto queda centrado en el borde entre dos
+## celdas, que es lo esperado para muebles de 2 celdas.
+func _object_footprint_offset(footprint: Vector2i) -> Vector3:
+	return Vector3(
+		(float(footprint.x) - 1.0) * grid.cell_size * 0.5,
+		0.0,
+		(float(footprint.y) - 1.0) * grid.cell_size * 0.5
+	)
+
+
+## Celdas que ocupa un objeto segun el centro real de su huella. Se incluyen
+## las celdas cuyo centro cae dentro del rectangulo, asi un objeto desplazado
+## media celda bloquea y se puede borrar desde cualquiera de ellas.
+func _object_cells_for(
+	item: BuildItem,
+	cell: Vector2i,
+	rotation_steps: int = 0,
+	sub_offset: Vector3 = Vector3.ZERO
+) -> Array[Vector2i]:
+	var cells: Array[Vector2i] = []
+	if item == null:
+		return cells
+	var footprint := _object_footprint(item, rotation_steps)
+	var center := grid.cell_center(cell) \
+		+ _object_footprint_offset(footprint) + sub_offset
+	var half := Vector2(footprint.x, footprint.y) * grid.cell_size * 0.5
+	var min_cell := grid.cell_from_world(center - Vector3(half.x, 0.0, half.y))
+	var max_cell := grid.cell_from_world(center + Vector3(half.x, 0.0, half.y))
+	var eps := 0.001
+	for x in range(min_cell.x - 1, max_cell.x + 2):
+		for z in range(min_cell.y - 1, max_cell.y + 2):
+			var c := Vector2i(x, z)
+			var cc := grid.cell_center(c)
+			if cc.x < center.x - half.x - eps or cc.x > center.x + half.x + eps:
+				continue
+			if cc.z < center.z - half.y - eps or cc.z > center.z + half.y + eps:
+				continue
+			cells.append(c)
+	return cells
+
+
+func _can_place_object(
+	cell: Vector2i,
+	item: BuildItem,
+	rotation_steps: int = 0,
+	sub_offset: Vector3 = Vector3.ZERO
+) -> bool:
 	if item == null or item.scene == null:
 		return false
-	var footprint := Vector2i(maxi(item.footprint.x, 1), maxi(item.footprint.y, 1))
-	for dx in footprint.x:
-		for dz in footprint.y:
-			var c := cell + Vector2i(dx, dz)
-			if not grid.is_cell_inside(c):
-				return false
-			if _object_cells.has(c):
-				return false
-			if require_floor_for_objects and not _floors.has(c):
-				return false
+	if not grid.is_cell_inside(cell):
+		return false
+	var cells := _object_cells_for(item, cell, rotation_steps, sub_offset)
+	if cells.is_empty():
+		return false
+	for c in cells:
+		if not grid.is_cell_inside(c):
+			return false
+		if _object_cells.has(c):
+			return false
+		if require_floor_for_objects and not _floors.has(c):
+			return false
 	return true
 
 
 ## Instancia un objeto (mueble/prop). La raíz de la escena puede ser un
 ## SmartObject; si no lo es, `_spawn_piece` la envuelve en un BuildPiece.
-func _place_object(cell: Vector2i, item: BuildItem, rotation_steps: int) -> bool:
-	if not _can_place_object(cell, item):
+## `sub_offset` permite desplazarlo en pasos de sub-grilla (0,5 m).
+func _place_object(
+	cell: Vector2i,
+	item: BuildItem,
+	rotation_steps: int,
+	sub_offset: Vector3 = Vector3.ZERO
+) -> bool:
+	var steps := wrapi(rotation_steps, 0, 4)
+	if not _can_place_object(cell, item, steps, sub_offset):
 		return false
 
-	var piece := _spawn_piece(item.scene)
+	var piece := _spawn_piece(item.scene, true, item.smart_object, true)
 	if piece == null:
 		return false
 
@@ -605,20 +830,21 @@ func _place_object(cell: Vector2i, item: BuildItem, rotation_steps: int) -> bool
 		if smart.definition == null and item.smart_object != null:
 			smart.definition = item.smart_object
 
-	var steps := wrapi(rotation_steps, 0, 4)
 	var yaw := float(steps) * PI * 0.5
+	var footprint := _object_footprint(item, steps)
 	piece.is_wall = false
 	piece.cell = cell
 	piece.item_id = item.id
 	piece.object_rotation_steps = steps
+	piece.sub_offset = sub_offset
 	piece.name = "Object_%s_%d_%d" % [String(item.id), cell.x, cell.y]
-	piece.global_position = grid.cell_center(cell) + Vector3.UP * object_height_offset
+	piece.global_position = grid.cell_center(cell) \
+		+ _object_footprint_offset(footprint) + sub_offset \
+		+ Vector3.UP * object_height_offset
 	piece.global_rotation = Vector3(0.0, yaw, 0.0)
 
-	var footprint := Vector2i(maxi(item.footprint.x, 1), maxi(item.footprint.y, 1))
-	for dx in footprint.x:
-		for dz in footprint.y:
-			_object_cells[cell + Vector2i(dx, dz)] = piece
+	for c in _object_cells_for(item, cell, steps, sub_offset):
+		_object_cells[c] = piece
 	_objects[cell] = piece
 
 	object_placed.emit(piece)
@@ -634,6 +860,13 @@ func _place_floor(cell: Vector2i, silent: bool = false) -> bool:
 	if piece == null:
 		return false
 
+	# Altura real de la cara superior del modelo: algunos GLB de piso son mas
+	# altos que `floor_thickness` y taparian la grilla principal.
+	var piece_aabb := _compute_aabb(piece)
+	var top_offset := floor_thickness * 0.5
+	if piece_aabb.size != Vector3.ZERO:
+		top_offset = piece_aabb.end.y
+
 	piece.is_wall = false
 	piece.cell = cell
 	piece.item_id = _current_item_id("floor")
@@ -645,9 +878,39 @@ func _place_floor(cell: Vector2i, silent: bool = false) -> bool:
 		piece.global_position = grid.cell_center(cell)
 	piece.set_dimensions(Vector3(grid.cell_size, floor_thickness, grid.cell_size))
 	_floors[cell] = piece
+	_floor_tops[cell] = piece.global_position.y + top_offset
+	_request_floor_grid_refresh()
 	if not silent:
 		pieces_changed.emit()
 	return true
+
+
+# --------------------------------------------------------------------------
+# Grilla secundaria sobre los pisos colocados
+# --------------------------------------------------------------------------
+
+## Pide un refresco diferido (un solo rebuild por frame aunque se coloque un
+## rectangulo entero de pisos).
+func _request_floor_grid_refresh() -> void:
+	if _floor_grid_dirty:
+		return
+	_floor_grid_dirty = true
+	call_deferred("_refresh_floor_grid")
+
+
+func _refresh_floor_grid() -> void:
+	_floor_grid_dirty = false
+	if grid == null:
+		return
+	var cells: Array[Vector2i] = []
+	var tops := PackedFloat32Array()
+	var fallback := grid.plane_global_y()
+	for cell in _floors.keys():
+		if not is_instance_valid(_floors[cell]):
+			continue
+		cells.append(cell)
+		tops.append(float(_floor_tops.get(cell, fallback)))
+	grid.set_floor_cells(cells, tops)
 
 
 func _place_wall(key: Vector3i) -> bool:
@@ -673,6 +936,8 @@ func _place_wall_silent(key: Vector3i) -> bool:
 func _start_wall_drag(erasing: bool = false) -> void:
 	if not _hovering:
 		return
+	# Al empezar a pintar una pared, ocultar las zonas para ver la linea.
+	_set_zones_hidden_for_brush(true)
 	_wall_dragging = true
 	_wall_drag_erasing = erasing
 	_wall_drag_start = _hover_wall
@@ -834,6 +1099,7 @@ func _finish_wall_drag() -> void:
 		_clear_wall_drag_ghosts()
 		_wall_dragging = false
 		_wall_drag_erasing = false
+		_update_zones_for_tool()
 		return
 
 	var placed := false
@@ -848,6 +1114,7 @@ func _finish_wall_drag() -> void:
 	_clear_wall_drag_ghosts()
 	_wall_dragging = false
 	_wall_drag_erasing = false
+	_update_zones_for_tool()
 
 
 # --------------------------------------------------------------------------
@@ -857,6 +1124,8 @@ func _finish_wall_drag() -> void:
 func _start_floor_drag(erasing: bool = false) -> void:
 	if not _hovering or not grid.is_cell_inside(_hover_cell):
 		return
+	# Mientras se pinta el piso, ocultar las zonas para ver el trazado.
+	_set_zones_hidden_for_brush(true)
 	_floor_dragging = true
 	_floor_drag_erasing = erasing
 	_floor_drag_start = _hover_cell
@@ -980,11 +1249,12 @@ func _rebuild_floor_preview(
 	_floor_preview.mesh = st.commit()
 
 	var base := grid.global_position
+	var lift := FLOOR_ERASE_PREVIEW_LIFT if erasing else FLOOR_PREVIEW_LIFT
 	_floor_preview.global_transform = Transform3D(
 		Basis.IDENTITY,
 		Vector3(
 			base.x + (float(min_cell.x) + float(cols) * 0.5) * cs,
-			grid.plane_global_y() + FLOOR_PREVIEW_LIFT,
+			grid.plane_global_y() + lift,
 			base.z + (float(min_cell.y) + float(rows) * 0.5) * cs
 		)
 	)
@@ -1047,6 +1317,7 @@ func _finish_floor_drag() -> void:
 		_clear_floor_drag_preview()
 		_floor_dragging = false
 		_floor_drag_erasing = false
+		_update_zones_for_tool()
 		return
 
 	var placed: Array[Vector2i] = []
@@ -1059,6 +1330,489 @@ func _finish_floor_drag() -> void:
 	_clear_floor_drag_preview()
 	_floor_dragging = false
 	_floor_drag_erasing = false
+	_update_zones_for_tool()
+
+
+# --------------------------------------------------------------------------
+# Pincel de zonas: rectangulos de celdas pintadas sobre el piso.
+# --------------------------------------------------------------------------
+
+func _start_zone_drag(erasing: bool = false) -> void:
+	if not _hovering or not grid.is_cell_inside(_hover_cell):
+		return
+	_zone_dragging = true
+	_zone_drag_erasing = erasing
+	_zone_drag_start = _hover_cell
+	_zone_drag_reveal = 0.0
+	_zone_drag_started_on = _zone_cells.get(_hover_cell, &"")
+	_clear_zone_drag_preview(false)
+	_zone_drag_cells.clear()
+
+
+func _update_zone_drag(delta: float = 0.0) -> void:
+	if not _hovering:
+		return
+
+	var cells := _zone_drag_rect_cells()
+	if _zone_drag_erasing:
+		_zone_drag_reveal = float(cells.size())
+	else:
+		if delta > 0.0:
+			_zone_drag_reveal += delta / ZONE_REVEAL_CELL_TIME
+		if not _same_floor_cells(cells, _zone_drag_cells):
+			if cells.size() > _zone_drag_cells.size():
+				_zone_drag_reveal = minf(
+					_zone_drag_reveal, float(_zone_drag_cells.size())
+				)
+			_zone_drag_cells = cells.duplicate()
+		_zone_drag_reveal = minf(_zone_drag_reveal, float(cells.size()))
+
+	if not _same_floor_cells(cells, _zone_preview_cells):
+		_rebuild_zone_preview(cells, _zone_drag_start, _zone_drag_erasing)
+	_update_zone_preview(cells, _zone_drag_reveal, _zone_drag_erasing)
+
+
+func _zone_drag_rect_cells() -> Array[Vector2i]:
+	var cells: Array[Vector2i] = []
+	if not _zone_dragging:
+		return cells
+
+	var start := grid.clamp_cell(_zone_drag_start)
+	var end := grid.clamp_cell(_hover_cell)
+	var x0 := mini(start.x, end.x)
+	var x1 := maxi(start.x, end.x)
+	var z0 := mini(start.y, end.y)
+	var z1 := maxi(start.y, end.y)
+
+	var rows: Array[int] = []
+	for z in range(z0, z1 + 1):
+		rows.append(z)
+	if end.y < start.y:
+		rows.reverse()
+	for z in rows:
+		var columns: Array[int] = []
+		for x in range(x0, x1 + 1):
+			columns.append(x)
+		if end.x < start.x:
+			columns.reverse()
+		for x in columns:
+			cells.append(Vector2i(x, z))
+	return cells
+
+
+func _rebuild_zone_preview(
+	cells: Array[Vector2i], start: Vector2i, erasing: bool
+) -> void:
+	if _zone_preview == null or cells.is_empty():
+		return
+
+	var min_cell := cells[0]
+	var max_cell := cells[0]
+	for cell in cells:
+		min_cell.x = mini(min_cell.x, cell.x)
+		min_cell.y = mini(min_cell.y, cell.y)
+		max_cell.x = maxi(max_cell.x, cell.x)
+		max_cell.y = maxi(max_cell.y, cell.y)
+	var cols := max_cell.x - min_cell.x + 1
+	var rows := max_cell.y - min_cell.y + 1
+	_zone_preview_cols = cols
+	_zone_preview_rows = rows
+
+	var cs := grid.cell_size
+	var half_w := float(cols) * cs * 0.5
+	var half_h := float(rows) * cs * 0.5
+	var end := cells[cells.size() - 1]
+	var neg_u := 0.0 if end.x >= start.x else 1.0
+	var neg_v := 0.0 if end.y >= start.y else 1.0
+	var pos_u := 1.0 - neg_u
+	var pos_v := 1.0 - neg_v
+	var corners := [
+		[Vector3(-half_w, 0.0, -half_h), Vector2(neg_u, neg_v)],
+		[Vector3(half_w, 0.0, -half_h), Vector2(pos_u, neg_v)],
+		[Vector3(half_w, 0.0, half_h), Vector2(pos_u, pos_v)],
+		[Vector3(-half_w, 0.0, half_h), Vector2(neg_u, pos_v)],
+	]
+	var order := [0, 2, 1, 0, 3, 2]
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for i in order:
+		var corner: Array = corners[i]
+		st.set_normal(Vector3.UP)
+		st.set_uv(corner[1])
+		st.add_vertex(corner[0])
+	_zone_preview.mesh = st.commit()
+
+	var base := grid.global_position
+	_zone_preview.global_transform = Transform3D(
+		Basis.IDENTITY,
+		Vector3(
+			base.x + (float(min_cell.x) + float(cols) * 0.5) * cs,
+			grid.plane_global_y() + ZONE_PREVIEW_LIFT,
+			base.z + (float(min_cell.y) + float(rows) * 0.5) * cs
+		)
+	)
+	_zone_preview_material.set_shader_parameter("valid_mask", _zone_preview_mask)
+	_zone_preview_material.set_shader_parameter("grid_size", Vector2(cols, rows))
+	_zone_preview_cells = cells.duplicate()
+
+
+func _update_zone_preview(
+	cells: Array[Vector2i], reveal_cells: float, erasing: bool
+) -> void:
+	if _zone_preview == null or _zone_preview_material == null or cells.is_empty():
+		return
+	var mat := _zone_preview_material
+	var fill := FLOOR_ERASE_FILL if erasing else ZONE_PREVIEW_FILL
+	var line := FLOOR_ERASE_LINE if erasing else ZONE_PREVIEW_LINE
+	mat.set_shader_parameter("fill_color", Color(fill.r, fill.g, fill.b, 1.0))
+	mat.set_shader_parameter("line_color", Color(line.r, line.g, line.b, 1.0))
+	mat.set_shader_parameter(
+		"invalid_color", Color(COLOR_BAD.r, COLOR_BAD.g, COLOR_BAD.b, 1.0)
+	)
+	mat.set_shader_parameter(
+		"grid_size", Vector2(_zone_preview_cols, _zone_preview_rows)
+	)
+
+	var total := float(cells.size())
+	var reveal := clampf(reveal_cells, 0.0, total)
+	var current := clampi(int(ceil(reveal)) - 1, 0, cells.size() - 1)
+	mat.set_shader_parameter("reveal_cells", reveal)
+	mat.set_shader_parameter("current_index", float(current))
+	_zone_preview.visible = true
+
+
+func _show_zone_preview(cell: Vector2i, erasing: bool) -> void:
+	if _zone_preview == null:
+		return
+	var cells: Array[Vector2i] = [cell]
+	if not _same_floor_cells(cells, _zone_preview_cells):
+		_rebuild_zone_preview(cells, cell, erasing)
+	_update_zone_preview(cells, 1.0, erasing)
+
+
+func _clear_zone_drag_preview(reset_reveal: bool = true) -> void:
+	_zone_drag_cells.clear()
+	_zone_preview_cells.clear()
+	if _zone_preview != null:
+		_zone_preview.visible = false
+	if reset_reveal:
+		_zone_drag_reveal = 0.0
+
+
+func _finish_zone_drag() -> void:
+	var cells := _zone_drag_rect_cells()
+
+	if _zone_drag_erasing:
+		_erase_zone_cells(cells)
+		_clear_zone_drag_preview()
+		_zone_dragging = false
+		_zone_drag_erasing = false
+		return
+
+	# Un clic sobre una zona existente abre el menu para asignarle tipo.
+	if cells.size() == 1 and _zone_drag_started_on != &"" \
+			and _zone_cells.get(cells[0], &"") == _zone_drag_started_on:
+		_clear_zone_drag_preview()
+		_zone_dragging = false
+		_zone_drag_erasing = false
+		_open_zone_menu(_zone_drag_started_on)
+		return
+
+	_paint_zone_cells(cells)
+	_clear_zone_drag_preview()
+	_zone_dragging = false
+	_zone_drag_erasing = false
+
+
+func _paint_zone_cells(cells: Array[Vector2i]) -> void:
+	if cells.is_empty():
+		return
+	var zone_id := _new_zone_id()
+	for cell in cells:
+		_zone_cells[cell] = zone_id
+	_zone_types[zone_id] = ZONE_DEFAULT_TYPE
+	_cleanup_zone_types()
+	_rebuild_zones_overlay()
+	zones_changed.emit()
+
+
+func _erase_zone_cells(cells: Array[Vector2i]) -> void:
+	var erased := false
+	for cell in cells:
+		if _zone_cells.erase(cell):
+			erased = true
+	if erased:
+		_cleanup_zone_types()
+		_rebuild_zones_overlay()
+		zones_changed.emit()
+
+
+func _new_zone_id() -> StringName:
+	var id := StringName("zone_%d" % _next_zone_id)
+	_next_zone_id += 1
+	return id
+
+
+func _cleanup_zone_types() -> void:
+	var used: Dictionary = {}
+	for zid in _zone_cells.values():
+		used[zid] = true
+	for zid in _zone_types.keys():
+		if not used.has(zid):
+			_zone_types.erase(zid)
+
+
+## Las zonas se ocultan mientras se colocan o borran objetos. El piso y la
+## pared las ocultan solo durante el trazo (ver `_start_floor_drag` y
+## `_start_wall_drag`); al cambiar de herramienta vuelven a mostrarse.
+func _tool_hides_zones() -> bool:
+	return tool == Tool.OBJECT \
+		or (tool == Tool.ERASE and erase_kind == EraseKind.OBJECT)
+
+
+func _update_zones_for_tool() -> void:
+	_set_zones_hidden_for_brush(_tool_hides_zones())
+
+
+func _set_zones_hidden_for_brush(hidden: bool) -> void:
+	if _zones_hidden_for_brush == hidden:
+		return
+	_zones_hidden_for_brush = hidden
+	_refresh_zones_visibility()
+
+
+func _refresh_zones_visibility() -> void:
+	var is_visible := build_mode and not _zone_cells.is_empty() \
+		and not _zones_hidden_for_brush
+	if _zones_overlay != null:
+		_zones_overlay.visible = is_visible
+	if _zone_labels_root != null:
+		_zone_labels_root.visible = is_visible
+
+
+func _rebuild_zones_overlay() -> void:
+	if _zones_overlay == null:
+		return
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var cell_size := grid.cell_size
+	var half := cell_size * 0.5
+	var plane := grid.plane_global_y() + ZONE_OVERLAY_LIFT
+	var border_plane := grid.plane_global_y() + ZONE_BORDER_LIFT
+	var border := minf(ZONE_BORDER_WIDTH, cell_size * 0.25)
+	var base := grid.global_position
+
+	for cell_key in _zone_cells.keys():
+		var cell: Vector2i = cell_key
+		var zone_id: StringName = _zone_cells[cell]
+		var type_id: StringName = _zone_types.get(zone_id, ZONE_DEFAULT_TYPE)
+		var info: Dictionary = ZONE_TYPES.get(type_id, ZONE_TYPES[ZONE_DEFAULT_TYPE])
+		var color: Color = info["color"]
+		var cx := base.x + (cell.x + 0.5) * cell_size
+		var cz := base.z + (cell.y + 0.5) * cell_size
+
+		# Relleno completo: sin separacion entre celdas, la zona se ve unida.
+		_add_zone_quad(st, [
+			Vector3(cx - half, plane, cz - half),
+			Vector3(cx + half, plane, cz - half),
+			Vector3(cx + half, plane, cz + half),
+			Vector3(cx - half, plane, cz + half),
+		], color)
+
+		# Borde solo en los lados que dan a otra zona o al vacio.
+		var edge_color := Color(
+			color.r * 0.72, color.g * 0.72, color.b * 0.72, 0.95
+		)
+		if _zone_cells.get(cell + Vector2i(0, -1), &"") != zone_id:
+			_add_zone_quad(st, [
+				Vector3(cx - half, border_plane, cz - half),
+				Vector3(cx + half, border_plane, cz - half),
+				Vector3(cx + half, border_plane, cz - half + border),
+				Vector3(cx - half, border_plane, cz - half + border),
+			], edge_color)
+		if _zone_cells.get(cell + Vector2i(0, 1), &"") != zone_id:
+			_add_zone_quad(st, [
+				Vector3(cx - half, border_plane, cz + half - border),
+				Vector3(cx + half, border_plane, cz + half - border),
+				Vector3(cx + half, border_plane, cz + half),
+				Vector3(cx - half, border_plane, cz + half),
+			], edge_color)
+		if _zone_cells.get(cell + Vector2i(-1, 0), &"") != zone_id:
+			_add_zone_quad(st, [
+				Vector3(cx - half, border_plane, cz - half),
+				Vector3(cx - half + border, border_plane, cz - half),
+				Vector3(cx - half + border, border_plane, cz + half),
+				Vector3(cx - half, border_plane, cz + half),
+			], edge_color)
+		if _zone_cells.get(cell + Vector2i(1, 0), &"") != zone_id:
+			_add_zone_quad(st, [
+				Vector3(cx + half - border, border_plane, cz - half),
+				Vector3(cx + half, border_plane, cz - half),
+				Vector3(cx + half, border_plane, cz + half),
+				Vector3(cx + half - border, border_plane, cz + half),
+			], edge_color)
+
+	_zones_overlay.mesh = st.commit()
+	_rebuild_zone_labels()
+	_refresh_zones_visibility()
+
+
+func _add_zone_quad(st: SurfaceTool, corners: Array, color: Color) -> void:
+	for i in [0, 2, 1, 0, 3, 2]:
+		st.set_color(color)
+		st.set_normal(Vector3.UP)
+		st.add_vertex(corners[i])
+
+
+## Etiquetas con el nombre del tipo en el centro de cada zona. Si una zona
+## quedo partida en varias islas, se pone una etiqueta en cada una.
+func _rebuild_zone_labels() -> void:
+	if _zone_labels_root == null:
+		return
+	for child in _zone_labels_root.get_children():
+		child.free()
+	if _zone_cells.is_empty():
+		return
+
+	var visited: Dictionary = {}
+	for cell_key in _zone_cells.keys():
+		var cell: Vector2i = cell_key
+		if visited.has(cell):
+			continue
+		var zone_id: StringName = _zone_cells[cell]
+		var component: Array[Vector2i] = []
+		var stack: Array[Vector2i] = [cell]
+		visited[cell] = true
+		while not stack.is_empty():
+			var current: Vector2i = stack.pop_back()
+			component.append(current)
+			for dir in [
+				Vector2i(1, 0), Vector2i(-1, 0),
+				Vector2i(0, 1), Vector2i(0, -1),
+			]:
+				var neighbor: Vector2i = current + dir
+				if visited.has(neighbor):
+					continue
+				if _zone_cells.get(neighbor, &"") != zone_id:
+					continue
+				visited[neighbor] = true
+				stack.append(neighbor)
+		var center_cell := _zone_component_center(component)
+		var type_id: StringName = _zone_types.get(zone_id, ZONE_DEFAULT_TYPE)
+		_create_zone_label(type_id, center_cell)
+
+
+func _zone_component_center(cells: Array[Vector2i]) -> Vector2i:
+	if cells.is_empty():
+		return Vector2i.ZERO
+	var sum := Vector2.ZERO
+	for cell in cells:
+		sum += Vector2(cell.x, cell.y)
+	var average := sum / float(cells.size())
+	var best := cells[0]
+	var best_distance := INF
+	for cell in cells:
+		var distance := Vector2(cell.x, cell.y).distance_squared_to(average)
+		if distance < best_distance:
+			best_distance = distance
+			best = cell
+	return best
+
+
+func _create_zone_label(type_id: StringName, cell: Vector2i) -> void:
+	if _zone_labels_root == null:
+		return
+	var label := Label3D.new()
+	label.text = _zone_type_name(type_id).to_upper()
+	label.font_size = 64
+	label.pixel_size = 0.007
+	label.outline_size = 12
+	label.outline_modulate = Color(0, 0, 0, 0.8)
+	label.modulate = Color(1, 1, 1, 0.95)
+	label.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+	label.shaded = false
+	label.double_sided = true
+	label.render_priority = 2
+	label.rotation = Vector3(-PI * 0.5, _zone_label_yaw(), 0.0)
+	var base := grid.global_position
+	label.position = Vector3(
+		base.x + (cell.x + 0.5) * grid.cell_size,
+		grid.plane_global_y() + ZONE_LABEL_LIFT,
+		base.z + (cell.y + 0.5) * grid.cell_size
+	)
+	_zone_labels_root.add_child(label)
+
+
+func _zone_label_yaw() -> float:
+	return build_camera.yaw if build_camera != null else 0.0
+
+
+## Mantiene las etiquetas planas y alineadas con la camara de obra para que se
+## lean bien al orbitar.
+func _update_zone_label_orientation() -> void:
+	if _zone_labels_root == null or not _zone_labels_root.visible \
+			or build_camera == null:
+		return
+	var yaw := build_camera.yaw
+	for child in _zone_labels_root.get_children():
+		if child is Label3D:
+			child.rotation = Vector3(-PI * 0.5, yaw, 0.0)
+
+
+func _zone_type_name(type_id: StringName) -> String:
+	var info: Dictionary = ZONE_TYPES.get(type_id, ZONE_TYPES[ZONE_DEFAULT_TYPE])
+	return String(info.get("name", "Sin asignar"))
+
+
+func _open_zone_menu(zone_id: StringName) -> void:
+	if _zone_menu_root == null:
+		return
+	var type_id: StringName = _zone_types.get(zone_id, ZONE_DEFAULT_TYPE)
+	var count := 0
+	for zid in _zone_cells.values():
+		if zid == zone_id:
+			count += 1
+	_zone_menu_zone_id = zone_id
+	_zone_menu_open = true
+	_zone_menu_label.text = "Zona · %d celdas\nTipo actual: %s" % [
+		count, _zone_type_name(type_id)
+	]
+	for tid in _zone_menu_buttons.keys():
+		var btn: Button = _zone_menu_buttons[tid]
+		btn.text = ("✓  " if tid == type_id else "") + _zone_type_name(tid)
+	_zone_menu_root.visible = true
+	_hide_ghosts()
+
+
+func _assign_zone_type(type_id: StringName) -> void:
+	if _zone_menu_zone_id == &"":
+		return
+	_zone_types[_zone_menu_zone_id] = type_id
+	_rebuild_zones_overlay()
+	zones_changed.emit()
+	_show_build_message(
+		"Zona asignada: %s" % _zone_type_name(type_id),
+		Color(0.75, 0.9, 1.0)
+	)
+	_close_zone_menu()
+
+
+func _close_zone_menu() -> void:
+	_zone_menu_open = false
+	_zone_menu_zone_id = &""
+	if _zone_menu_root != null:
+		_zone_menu_root.visible = false
+
+
+func get_zone_count() -> int:
+	return _zone_cells.size()
+
+
+func get_zone_type(cell: Vector2i) -> StringName:
+	var zone_id: StringName = _zone_cells.get(cell, &"")
+	if zone_id == &"":
+		return &""
+	return _zone_types.get(zone_id, &"")
 
 
 func _erase_at(
@@ -1114,6 +1868,8 @@ func _erase_floor_at(
 		return false
 	var piece := _floors.get(cell) as BuildPiece
 	_floors.erase(cell)
+	_floor_tops.erase(cell)
+	_request_floor_grid_refresh()
 	if piece != null and is_instance_valid(piece):
 		_disable_piece_collision(piece)
 		_animate_floor_erase(piece, order)
@@ -1223,9 +1979,14 @@ func _apply_selected_item() -> void:
 		"erase_object":
 			erase_kind = EraseKind.OBJECT
 			tool = Tool.ERASE
+		"zone_paint":
+			tool = Tool.ZONE
+		"zone_erase":
+			tool = Tool.ZONE_ERASE
 		_:
 			# Tipos aún no colocables (techo, aberturas, ...).
 			pass
+	_update_zones_for_tool()
 	_update_ui()
 
 
@@ -1744,14 +2505,28 @@ func _spawn_map_piece(map_path: String) -> BuildPiece:
 	return piece
 
 
-func _spawn_piece(scene: PackedScene, with_collision: bool = true) -> BuildPiece:
+func _spawn_piece(
+	scene: PackedScene,
+	with_collision: bool = true,
+	smart_def: SmartObjectDef = null,
+	center_visual: bool = false
+) -> BuildPiece:
 	if scene == null:
 		push_warning("BuildController: falta un prefab de pieza.")
 		return null
 
 	var instance := scene.instantiate()
 	var piece: BuildPiece
-	if instance is BuildPiece:
+	if instance is SmartObject:
+		var smart := instance as SmartObject
+		if smart.definition == null and smart_def != null:
+			smart.definition = smart_def
+		piece = smart
+		if not with_collision:
+			var old_collision := piece.get_node_or_null("CollisionShape3D") as CollisionShape3D
+			if old_collision != null:
+				old_collision.queue_free()
+	elif instance is BuildPiece and smart_def == null:
 		piece = instance as BuildPiece
 		if not with_collision:
 			var old_collision := piece.get_node_or_null("CollisionShape3D") as CollisionShape3D
@@ -1762,28 +2537,66 @@ func _spawn_piece(scene: PackedScene, with_collision: bool = true) -> BuildPiece
 			push_warning("BuildController: el prefab no es una pieza ni un nodo 3D.")
 			instance.queue_free()
 			return null
-		for child in (instance as Node3D).get_children():
-			if child is Camera3D or child is Light3D:
-				child.queue_free()
-		piece = BuildPiece.new()
-		piece.name = instance.name
-		# Conservar el origen del modelo; no recentrarlo.
-		piece.add_child(instance)
-		if with_collision:
-			var aabb := _compute_aabb(instance)
-			if aabb.size == Vector3.ZERO:
-				aabb.size = Vector3.ONE
-			var collision := CollisionShape3D.new()
-			collision.name = "CollisionShape3D"
-			var box := BoxShape3D.new()
-			box.size = aabb.size
-			collision.shape = box
-			collision.position = aabb.position + aabb.size * 0.5
-			piece.add_child(collision)
+		# Un prefab comun (GLB, escena suelta) con definicion SmartObject se
+		# envuelve en un SmartObject: la IA ve el mueble aunque el modelo no
+		# traiga la raiz con el script.
+		piece = _wrap_3d_instance(instance as Node3D, with_collision, smart_def,
+			center_visual)
 
 	var parent: Node = pieces_root if pieces_root != null else self
 	parent.add_child(piece)
 	return piece
+
+
+## Envuelve una escena 3D comun en un BuildPiece (o SmartObject) con collider.
+## `center_visual` recentra el modelo en X/Z: util para GLB cuyo pivote esta en
+## una pata o un borde en vez del centro de la huella.
+func _wrap_3d_instance(
+	instance: Node3D,
+	with_collision: bool,
+	smart_def: SmartObjectDef,
+	center_visual: bool = false
+) -> BuildPiece:
+	for child in instance.get_children():
+		if child is Camera3D or child is Light3D:
+			child.queue_free()
+
+	var piece: BuildPiece
+	if smart_def != null:
+		var smart := SmartObject.new()
+		smart.definition = smart_def
+		piece = smart
+	else:
+		piece = BuildPiece.new()
+	piece.name = instance.name
+	piece.add_child(instance)
+	if center_visual:
+		_center_visual_xz(instance)
+	if with_collision:
+		var aabb := _compute_aabb(instance)
+		if aabb.size == Vector3.ZERO:
+			aabb.size = Vector3.ONE
+		var collision := CollisionShape3D.new()
+		collision.name = "CollisionShape3D"
+		var box := BoxShape3D.new()
+		box.size = aabb.size
+		collision.shape = box
+		collision.position = aabb.position + aabb.size * 0.5
+		piece.add_child(collision)
+	return piece
+
+
+## Desplaza el modelo para que el centro de su AABB quede sobre el origen,
+## manteniendo la altura (la base sigue apoyada en el piso). Los modelos que ya
+## estan centrados no se tocan.
+static func _center_visual_xz(instance: Node3D) -> void:
+	var aabb := _compute_aabb(instance)
+	if aabb.size == Vector3.ZERO:
+		return
+	var center := aabb.get_center()
+	if Vector2(center.x, center.z).length() < 0.01:
+		return
+	instance.position -= Vector3(center.x, 0.0, center.z)
 
 
 static func _collect_meshes(node: Node, out: Array[MeshInstance3D]) -> void:
@@ -1840,6 +2653,18 @@ func _update_hover() -> bool:
 	if tool == Tool.FLOOR or tool == Tool.WALL:
 		grid.expand_if_near_edge(_hover_cell)
 	_hover_wall = grid.wall_from_world(hit)
+
+	# Precision de medio metro para objetos: se ajusta el centro de la huella a
+	# la sub-grilla, limitado a un paso por eje.
+	_hover_sub_offset = Vector3.ZERO
+	if tool == Tool.OBJECT and _selected_object_item != null \
+			and grid.subdivisions > 1:
+		var point: Vector3 = hit
+		var footprint := _object_footprint(_selected_object_item, _object_rotation)
+		var base := grid.cell_center(_hover_cell) \
+			+ _object_footprint_offset(footprint)
+		_hover_sub_offset = grid.snap_offset(
+			Vector2(point.x - base.x, point.z - base.z), 1)
 	return true
 
 
@@ -1847,6 +2672,8 @@ func _update_ghosts() -> void:
 	# El arrastre de pisos mantiene su propia previsualizacion persistente:
 	# no hay que ocultarla en cada frame.
 	if _floor_dragging:
+		return
+	if _zone_dragging:
 		return
 	_hide_ghosts()
 	if not _hovering:
@@ -1858,12 +2685,18 @@ func _update_ghosts() -> void:
 	match tool:
 		Tool.FLOOR:
 			_show_floor_preview(grid.clamp_cell(_hover_cell), false)
+		Tool.ZONE:
+			_show_zone_preview(grid.clamp_cell(_hover_cell), false)
+		Tool.ZONE_ERASE:
+			_show_zone_preview(grid.clamp_cell(_hover_cell), true)
 		Tool.WALL:
 			_show_wall_ghost(grid.clamp_wall(_hover_wall),
 				_can_place_wall(_hover_wall), false)
 		Tool.OBJECT:
 			_show_object_ghost(grid.clamp_cell(_hover_cell),
-				_can_place_object(_hover_cell, _selected_object_item), false)
+				_can_place_object(_hover_cell, _selected_object_item,
+					_object_rotation, _hover_sub_offset), false,
+				_hover_sub_offset)
 		Tool.ERASE:
 			match erase_kind:
 				EraseKind.OBJECT:
@@ -1947,32 +2780,34 @@ func _update_ghost_material(
 	mat.set_shader_parameter("build_top", top_y)
 
 
-func _show_object_ghost(cell: Vector2i, valid: bool, erasing: bool) -> void:
+func _show_object_ghost(
+	cell: Vector2i,
+	valid: bool,
+	erasing: bool,
+	sub_offset: Vector3 = Vector3.ZERO
+) -> void:
 	if _object_ghost == null:
 		return
 
 	var scene: PackedScene = null
 	var footprint := Vector2i(1, 1)
 	var steps := _object_rotation
+	var offset := sub_offset
 	if erasing:
 		# Al borrar se muestra el modelo del objeto que hay bajo el cursor.
 		var piece := _object_cells.get(cell) as BuildPiece
 		if piece != null:
 			var item := _find_item_by_id(piece.item_id)
+			steps = piece.object_rotation_steps
+			offset = piece.sub_offset
 			if item != null:
 				scene = item.scene
-				footprint = Vector2i(
-					maxi(item.footprint.x, 1), maxi(item.footprint.y, 1)
-				)
+				footprint = _object_footprint(item, steps)
 			# El objeto puede ocupar varias celdas: usar su celda primaria.
 			cell = piece.cell
-			steps = piece.object_rotation_steps
 	elif _selected_object_item != null:
 		scene = _selected_object_item.scene
-		footprint = Vector2i(
-			maxi(_selected_object_item.footprint.x, 1),
-			maxi(_selected_object_item.footprint.y, 1)
-		)
+		footprint = _object_footprint(_selected_object_item, steps)
 
 	if _object_ghost_model == null or _object_ghost_scene != scene \
 			or _object_ghost_footprint != footprint \
@@ -1983,8 +2818,9 @@ func _show_object_ghost(cell: Vector2i, valid: bool, erasing: bool) -> void:
 
 	_object_ghost.visible = true
 	_object_ghost.global_transform = Transform3D(
-		Basis(Vector3.UP, float(steps % 4) * PI * 0.5),
-		grid.cell_center(cell) + Vector3.UP * object_height_offset
+		Basis(Vector3.UP, float(steps) * PI * 0.5),
+		grid.cell_center(cell) + _object_footprint_offset(footprint) \
+			+ offset + Vector3.UP * object_height_offset
 	)
 	_update_ghost_material(
 		_object_ghost_material, _object_ghost, _object_ghost_aabb,
@@ -1996,6 +2832,8 @@ func _show_object_ghost(cell: Vector2i, valid: bool, erasing: bool) -> void:
 func _hide_ghosts() -> void:
 	if _floor_preview != null:
 		_floor_preview.visible = false
+	if _zone_preview != null:
+		_zone_preview.visible = false
 	if _wall_ghost != null:
 		_wall_ghost.visible = false
 	if _object_ghost != null:
@@ -2061,6 +2899,46 @@ func _create_ghosts() -> void:
 	_floor_preview_material.set_shader_parameter(
 		"valid_mask", ImageTexture.create_from_image(empty_mask)
 	)
+	# Overlay de zonas: un quad por celda, coloreado por tipo. Se construye en
+	# coordenadas de mundo, por eso el nodo es top-level.
+	_zones_overlay = MeshInstance3D.new()
+	_zones_overlay.name = "ZonesOverlay"
+	_zones_overlay.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_zones_material = StandardMaterial3D.new()
+	_zones_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_zones_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	_zones_material.vertex_color_use_as_albedo = true
+	_zones_material.albedo_color = Color.WHITE
+	_zones_material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	_zones_overlay.material_override = _zones_material
+	_zones_overlay.visible = false
+	add_child(_zones_overlay)
+	_zones_overlay.top_level = true
+	_zones_overlay.global_transform = Transform3D.IDENTITY
+
+	# Etiquetas 3D con el nombre del tipo en el centro de cada zona.
+	_zone_labels_root = Node3D.new()
+	_zone_labels_root.name = "ZoneLabels"
+	add_child(_zone_labels_root)
+	_zone_labels_root.top_level = true
+	_zone_labels_root.global_transform = Transform3D.IDENTITY
+	_zone_labels_root.visible = false
+
+	# Pincel de zonas: reutiliza el shader plano del pincel de pisos.
+	_zone_preview = MeshInstance3D.new()
+	_zone_preview.name = "ZonePreview"
+	_zone_preview.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_zone_preview_material = ShaderMaterial.new()
+	_zone_preview_material.shader = FLOOR_PREVIEW_SHADER
+	_zone_preview.material_override = _zone_preview_material
+	_zone_preview.visible = false
+	add_child(_zone_preview)
+	_zone_preview.top_level = true
+	var zone_mask := Image.create(1, 1, false, Image.FORMAT_L8)
+	zone_mask.fill(Color(1, 1, 1))
+	_zone_preview_mask = ImageTexture.create_from_image(zone_mask)
+	_zone_preview_material.set_shader_parameter("valid_mask", _zone_preview_mask)
+
 	_wall_ghost = Node3D.new()
 	_wall_ghost.name = "WallGhost"
 	_wall_ghost.visible = false
@@ -2205,6 +3083,9 @@ func _build_object_ghost_visual(
 	container.add_child(instance)
 
 	_strip_ghost_instance(instance)
+	# Mismo recentrado que en la pieza real: el fantasma debe coincidir con la
+	# huella aunque el pivote del modelo no este centrado.
+	_center_visual_xz(instance)
 
 	var meshes: Array[MeshInstance3D] = []
 	_collect_meshes(instance, meshes)
@@ -2416,6 +3297,7 @@ func _create_ui() -> void:
 	hint.offset_right = 980
 	hint.offset_bottom = -14
 	_ui_layer.add_child(hint)
+	_build_zone_menu()
 
 	# Avisos de guardado/carga: capa propia, visible siempre.
 	_message_layer = CanvasLayer.new()
@@ -2445,6 +3327,60 @@ func _make_label(text: String, font_size: int, color: Color) -> Label:
 	return label
 
 
+## Menu modal para asignar el tipo de una zona pintada.
+func _build_zone_menu() -> void:
+	_zone_menu_root = CenterContainer.new()
+	_zone_menu_root.name = "ZoneMenuRoot"
+	_zone_menu_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_zone_menu_root.visible = false
+	_ui_layer.add_child(_zone_menu_root)
+
+	_zone_menu = PanelContainer.new()
+	_zone_menu.custom_minimum_size = Vector2(380, 0)
+	_zone_menu_root.add_child(_zone_menu)
+
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 14)
+	margin.add_theme_constant_override("margin_top", 14)
+	margin.add_theme_constant_override("margin_right", 14)
+	margin.add_theme_constant_override("margin_bottom", 14)
+	_zone_menu.add_child(margin)
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 8)
+	margin.add_child(vbox)
+
+	var title := Label.new()
+	title.text = "Asignar zona"
+	title.add_theme_font_size_override("font_size", 18)
+	vbox.add_child(title)
+
+	_zone_menu_label = Label.new()
+	_zone_menu_label.add_theme_font_size_override("font_size", 13)
+	_zone_menu_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(_zone_menu_label)
+
+	for type_id in [&"hallway", &"waiting", &"consult"]:
+		var info: Dictionary = ZONE_TYPES[type_id]
+		var btn := Button.new()
+		btn.text = String(info["name"])
+		btn.custom_minimum_size = Vector2(0, 40)
+		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		var col: Color = info["color"]
+		btn.add_theme_color_override(
+			"font_color", Color(col.r, col.g, col.b, 1.0).lightened(0.25)
+		)
+		btn.pressed.connect(_assign_zone_type.bind(type_id))
+		vbox.add_child(btn)
+		_zone_menu_buttons[type_id] = btn
+
+	var cancel := Button.new()
+	cancel.text = "Cancelar"
+	cancel.custom_minimum_size = Vector2(0, 36)
+	cancel.pressed.connect(_close_zone_menu)
+	vbox.add_child(cancel)
+
+
 func _update_ui() -> void:
 	if _ui_layer == null:
 		return
@@ -2454,9 +3390,13 @@ func _update_ui() -> void:
 
 	var tool_name := _tool_name()
 	if _hovering:
-		_ui_tool.text = "%s   ·   celda (%d, %d)" % [
+		var text := "%s   ·   celda (%d, %d)" % [
 			tool_name, _hover_cell.x, _hover_cell.y
 		]
+		var zone_type := get_zone_type(_hover_cell)
+		if zone_type != &"":
+			text += "   ·   zona: %s" % _zone_type_name(zone_type)
+		_ui_tool.text = text
 	else:
 		_ui_tool.text = tool_name
 
@@ -2483,6 +3423,10 @@ func _tool_name() -> String:
 					return "Herramienta: borrar objeto"
 				_:
 					return "Herramienta: borrar"
+		Tool.ZONE:
+			return "Herramienta: zona"
+		Tool.ZONE_ERASE:
+			return "Herramienta: borrar zona"
 	return ""
 
 
@@ -2589,6 +3533,7 @@ func save_construction() -> void:
 		"floors": [],
 		"walls": [],
 		"objects": [],
+		"zones": [],
 	}
 	for cell in _floors.keys():
 		var piece: BuildPiece = _floors[cell]
@@ -2618,7 +3563,22 @@ func save_construction() -> void:
 			"y": cell.y,
 			"item_id": String(piece.item_id),
 			"rotation": piece.object_rotation_steps,
+			"offset_x": piece.sub_offset.x,
+			"offset_z": piece.sub_offset.z,
 		})
+
+	# Zonas: agrupadas por id para conservar cada trazo por separado.
+	var zones_by_id: Dictionary = {}
+	for cell in _zone_cells.keys():
+		var zone_id: StringName = _zone_cells[cell]
+		if not zones_by_id.has(zone_id):
+			zones_by_id[zone_id] = {
+				"type": String(_zone_types.get(zone_id, ZONE_DEFAULT_TYPE)),
+				"cells": [],
+			}
+		zones_by_id[zone_id]["cells"].append([cell.x, cell.y])
+	for zone_id in zones_by_id.keys():
+		data["zones"].append(zones_by_id[zone_id])
 
 	var path := get_build_save_path()
 	if not _write_build_save(path, data):
@@ -2630,11 +3590,15 @@ func save_construction() -> void:
 			_show_build_message("No se pudo guardar la construcción", Color(1.0, 0.5, 0.4))
 			return
 	var total := int(data["floors"].size()) + int(data["walls"].size()) + int(data["objects"].size())
-	print("BuildController: construcción guardada en %s (%d suelos, %d paredes, %d objetos)" % [
-		path, data["floors"].size(), data["walls"].size(), data["objects"].size()
+	print("BuildController: construcción guardada en %s (%d suelos, %d paredes, %d objetos, %d zonas)" % [
+		path, data["floors"].size(), data["walls"].size(),
+		data["objects"].size(), data["zones"].size()
 	])
+	var zones_note := ""
+	if int(data["zones"].size()) > 0:
+		zones_note = "  ·  %d zonas" % int(data["zones"].size())
 	_show_build_message(
-		"Construcción guardada: %d piezas  ·  %s" % [total, path],
+		"Construcción guardada: %d piezas%s  ·  %s" % [total, zones_note, path],
 		Color(0.6, 1.0, 0.7)
 	)
 
@@ -2748,8 +3712,38 @@ func load_construction() -> void:
 		if item == null:
 			continue
 		var rot := int(entry.get("rotation", 0))
-		if _place_object(cell, item, rot):
+		var sub := Vector3(
+			float(entry.get("offset_x", 0.0)), 0.0,
+			float(entry.get("offset_z", 0.0))
+		)
+		if _place_object(cell, item, rot, sub):
 			changed = true
+
+	# Zonas
+	var zones_loaded := false
+	_close_zone_menu()
+	_zone_cells.clear()
+	_zone_types.clear()
+	_next_zone_id = 1
+	for entry in data.get("zones", []):
+		if typeof(entry) != TYPE_DICTIONARY:
+			continue
+		var type_id := StringName(String(entry.get("type", "unassigned")))
+		if not ZONE_TYPES.has(type_id):
+			type_id = ZONE_DEFAULT_TYPE
+		var zone_id := _new_zone_id()
+		_zone_types[zone_id] = type_id
+		for cell_entry in entry.get("cells", []):
+			if typeof(cell_entry) != TYPE_ARRAY or cell_entry.size() < 2:
+				continue
+			var cell := Vector2i(int(cell_entry[0]), int(cell_entry[1]))
+			if grid.is_cell_inside(cell):
+				_zone_cells[cell] = zone_id
+				zones_loaded = true
+	_cleanup_zone_types()
+	_rebuild_zones_overlay()
+	if zones_loaded:
+		zones_changed.emit()
 
 	selected_item = prev_selected
 	_active_map_file = prev_active_map

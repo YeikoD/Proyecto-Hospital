@@ -46,6 +46,8 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.02, -25)
 [node name="BuildGrid" parent="BuildSystem" index="0"]
 cells_x = 25
 cells_z = 50
+sub_dash_length = null
+sub_dash_gap = null
 
 [node name="Ground" type="StaticBody3D" parent="." unique_id=1667772600 groups=["navigation_static"]]
 transform = Transform3D(2.5, 0, 0, 0, 1, 0, 0, 0, 2.5, 0, 0, 0)
@@ -70,9 +72,29 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.05, 9)
 [node name="SpawnerA" parent="Spawners" unique_id=654457107 instance=ExtResource("9_30ca6")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0.1, -57)
 npc_parent_path = NodePath("../NPCs")
+spawn_interval_min = 6.0
+spawn_interval_max = 12.0
+initial_delay = 1.0
+min_player_distance = 12.0
+require_objective = false
+route_target_path = NodePath("../SpawnerB")
+route_loop = true
+route_wait_at_target = 1.0
+route_smart_object_chance = 0.35
+route_smart_object_radius = 15.0
 
 [node name="SpawnerB" parent="Spawners" unique_id=584634702 instance=ExtResource("9_30ca6")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.5, 0.1, 75.5)
 npc_parent_path = NodePath("../NPCs")
+spawn_interval_min = 6.0
+spawn_interval_max = 12.0
+initial_delay = 4.0
+min_player_distance = 12.0
+require_objective = false
+route_target_path = NodePath("../SpawnerA")
+route_loop = true
+route_wait_at_target = 1.0
+route_smart_object_chance = 0.35
+route_smart_object_radius = 15.0
 
 [editable path="BuildSystem"]

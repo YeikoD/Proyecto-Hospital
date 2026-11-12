@@ -45,8 +45,9 @@ extends Resource
 @export_file("*.map", "*.vmf") var map_file: String = ""
 
 @export_group("Smart Object")
-## Definición de interacción del objeto (opcional). Si se asigna, la escena
-## debe tener raíz SmartObject para que la IA pueda reservar sus slots.
+## Definición de interacción del objeto (opcional). Si se asigna, la pieza se
+## registra como SmartObject aunque la escena sea un modelo plano: el sistema la
+## envuelve automáticamente y crea un slot de uso si el prefab no trae `Slot_*`.
 @export var smart_object: SmartObjectDef
 
 ## Huella en celdas (para futuras piezas multi-celda).
@@ -62,7 +63,10 @@ extends Resource
 func is_placeable_now() -> bool:
 	# Tipos que el motor de colocación sabe instanciar en la grilla.
 	var has_source := scene != null or map_file != ""
-	if object_type in ["erase_floor", "erase_wall", "erase_object"]:
+	if object_type in [
+		"erase_floor", "erase_wall", "erase_object",
+		"zone_paint", "zone_erase",
+	]:
 		return true
 	return object_type in [
 		"floor", "wall", "suelo", "pared",

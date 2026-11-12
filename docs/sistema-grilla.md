@@ -4,9 +4,9 @@
 | --- | --- |
 | Proyecto | Proyecto Hospital (Godot 4.7) |
 | Módulo | `res://scripts/systems/build/` |
-| Versión del documento | 1.2 |
-| Estado | Implementado y verificado (construcción + navegación) |
-| Fecha | 2026-11-11 |
+| Versión del documento | 1.3 |
+| Estado | Implementado y verificado (construcción + navegación + sub-grilla de objetos) |
+| Fecha | 2026-11-12 |
 | Motor verificado | Godot 4.7.2 stable |
 
 ---
@@ -577,10 +577,13 @@ también se ve en el editor.
 | `cell_size` | `1.0` | Tamaño de celda en metros |
 | `grid_extent` | `(32, 32)` | Cantidad de celdas |
 | `fill_color` | blanco muy tenue | Relleno del plano |
-| `minor_color` | blanco tenue | Líneas menores |
-| `major_color` | blanco | Líneas mayores |
+| `minor_color` | blanco tenue | Líneas de 1 m |
 | `border_color` | blanco brillante | Borde del área construible |
-| `major_every` | `5` | Una línea mayor cada N celdas |
+| `subdivisions` | `2` | Divisiones de la sub-grilla por celda |
+| `show_subdivisions` | `true` | Dibuja las líneas finas |
+| `sub_color` | blanco tenue | Líneas de la sub-grilla |
+| `sub_dash_length` | `0.1` | Largo de cada guion, en celdas |
+| `sub_dash_gap` | `0.1` | Separación entre guiones, en celdas |
 | `line_width` | `1.2` | Grosor de línea en píxeles |
 | `show_border` | `true` | Dibuja el perímetro |
 | `fade_start` / `fade_end` | `60` / `120` | Distancia de desvanecido |
@@ -594,6 +597,111 @@ float mask = 1.0 - clamp(min(grid.x, grid.y) / line_width, 0.0, 1.0);
 
 El controlador ajusta `fade_start`/`fade_end` a `2×` y `3.5×` el lado mayor
 de la grilla para que las líneas lejanas no generen ruido visual.
+
+### 10.3 Grilla secundaria sobre los pisos
+
+La grilla principal queda a `plane_y + 0.015`, pero algunos modelos de piso son
+más altos que ese plano (por ejemplo `floor_exterior_01.glb`, cuya cara
+superior sobresale). El slab del piso tapa entonces las líneas.
+
+Para resolverlo, `BuildGrid` crea un segundo `MeshInstance3D` llamado
+`FloorGridOverlay`, con un `ShaderMaterial` que usa el mismo `grid.gdshader`:
+
+- La malla se arma con **un quad por cada celda que tiene piso colocado**; las
+  celdas vacías no reciben geometría.
+- Cada quad se apoya en la **cara superior real del piso** más un pequeño
+  margen (`FLOOR_GRID_LIFT = 0.006`) para evitar *z-fighting*.
+- La altura real se mide con el AABB del modelo al colocarlo, no se asume
+  `floor_thickness` (los GLB pueden ser más altos o más bajos).
+- Las alphas del shader se multiplican por `floor_grid_opacity` (por defecto
+  `0.6`), así la grilla de pisos es **más transparente** que la principal y no
+  compite con el material del suelo.
+- Se reconstruye con `set_floor_cells(cells, tops)` y se limpia con
+  `clear_floor_cells()`. `BuildController` la refresca de forma diferida
+  (un solo rebuild por frame) al colocar, borrar, cargar o limpiar pisos.
+
+Propiedades nuevas de `BuildGrid`:
+
+| Propiedad | Default | Función |
+| --- | --- | --- |
+| `show_floor_grid` | `true` | Activa la grilla secundaria |
+| `floor_grid_opacity` | `0.6` | Multiplicador de opacidad respecto de la principal |
+
+### 10.4 Sub-grilla de precisión (objetos)
+
+Suelos y paredes siguen ocupando celdas completas, pero los **objetos**
+(muebles y props) se pueden colocar con precisión de **medio metro**, como el
+modo de colocación fina de *Los Sims*.
+
+La sub-grilla divide cada celda en `subdivisions × subdivisions` partes. Con el
+valor por defecto `subdivisions = 2` cada metro cuadrado queda dividido en 4,
+es decir, el paso fino es `cell_size / 2 = 0.5 m`.
+
+| Propiedad de `BuildGrid` | Default | Función |
+| --- | --- | --- |
+| `subdivisions` | `2` | Divisiones por eje dentro de cada celda (`1` desactiva la sub-grilla lógica) |
+| `show_subdivisions` | `true` | Dibuja las líneas finas en el overlay |
+| `sub_dash_length` | `0.1` | Largo de cada guion, en celdas (0,1 m) |
+| `sub_dash_gap` | `0.1` | Separación entre guiones, en celdas (0,1 m) |
+
+Las líneas finas se dibujan **discontinuas** (guiones cortos) para que el ojo
+las distinga de la grilla principal de 1 m sin confundir ambas. Con
+`sub_dash_length = 0.1` y `sub_dash_gap = 0.1` hay 5 guiones por metro, similar
+a la grilla de precisión de *Los Sims*.
+
+Las líneas finas las pinta el mismo `grid.gdshader` (uniform `sub_color`), tanto
+en la grilla principal como en la grilla secundaria sobre los pisos. Por eso la
+precisión se ve incluso cuando el suelo tapa el plano base.
+
+El patrón de guiones se calcula a partir de la distancia a la línea y de una
+máscara a lo largo de ella; cerca de la cámara los guiones quedan nítidos y a
+distancia se funden suavemente para evitar parpadeo (`fwidth`). Al alejarse, el
+trazo discontinuo se vuelve continuo en lugar de generar ruido.
+
+Todas las líneas de 1 m comparten el mismo grosor (`line_width`): no hay una
+línea más gruesa cada 5 m. El único trazo con grosor distinto es el borde del
+área construible, que no forma parte de la cuadrícula interior.
+
+#### Cómo se calcula el desplazamiento
+
+Al mover el ratón con la herramienta de objetos, el controlador toma el punto
+del plano bajo el cursor, lo compara con el centro de la huella y lo ajusta a la
+sub-grilla:
+
+```gdscript
+# BuildGrid
+func sub_cell_size() -> float:
+	return cell_size / float(maxi(subdivisions, 1))
+
+func snap_offset(delta: Vector2, max_steps: int = 1) -> Vector3:
+	# redondea delta al paso fino y lo limita a ±max_steps pasos por eje
+```
+
+El desplazamiento se **limita a un paso por eje** respecto del centro de la
+huella. Al mover el cursor a la celda vecina, el ancla cambia y el desplazamiento
+vuelve a empezar, de modo que el recorrido completo ofrece posiciones continuas
+cada 0,5 m sin que el objeto “salte” dos celdas.
+
+El offset resultante se guarda en `BuildPiece.sub_offset` y se aplica igual en:
+
+- la pieza real,
+- el *ghost* de colocación,
+- el *ghost* de borrado (recupera el offset guardado por la pieza).
+
+#### Ocupación con objetos desplazados
+
+La ocupación no se deriva del rectángulo de celdas de la huella, sino de la
+**huella real ya desplazada**. `BuildController._object_cells_for()` incluye
+toda celda cuyo centro caiga dentro del rectángulo del objeto (con una tolerancia
+de `0.001 m`). Consecuencias:
+
+- Una silla de 1×1 desplazada 0,5 m ocupa **2 celdas**.
+- Un escritorio de 2×1 desplazado 0,5 m ocupa **3 celdas**.
+- Esas celdas bloquean la superposición de otros objetos y permiten borrar el
+  objeto desde cualquiera de ellas, no solo desde su celda ancla.
+
+El desplazamiento se persiste en el guardado del nivel como `offset_x` /
+`offset_z` dentro de cada entrada de `objects` y se restaura al cargar.
 
 ---
 
@@ -715,6 +823,12 @@ var cells_x: int
 var cells_z: int
 var plane_y: float
 var show_border: bool
+var show_floor_grid: bool
+var floor_grid_opacity: float
+var subdivisions: int
+var show_subdivisions: bool
+var sub_dash_length: float
+var sub_dash_gap: float
 var auto_expand: bool
 var expand_step: int
 var expand_margin: int
@@ -726,6 +840,10 @@ func clamp_cell(cell: Vector2i) -> Vector2i
 func cell_center(cell: Vector2i) -> Vector3
 func plane_global_y() -> float
 func center_point() -> Vector3
+
+# Sub-grilla de precisión (objetos)
+func sub_cell_size() -> float
+func snap_offset(delta: Vector2, max_steps: int = 1) -> Vector3
 
 # Tamaño / expansión
 func set_grid_size(new_cells_x: int, new_cells_z: int) -> void
@@ -740,6 +858,10 @@ func clamp_wall(key: Vector3i) -> Vector3i
 func wall_center(key: Vector3i) -> Vector3
 func wall_yaw(key: Vector3i) -> float
 func wall_keys_around_cell(cell: Vector2i) -> Array[Vector3i]
+
+# Grilla secundaria sobre pisos
+func set_floor_cells(cells: Array[Vector2i], tops: PackedFloat32Array) -> void
+func clear_floor_cells() -> void
 ```
 
 ### `BuildController`
@@ -760,6 +882,8 @@ func clear_all() -> void
 # API programática (mismas validaciones que las herramientas)
 func place_floor(cell: Vector2i) -> bool
 func place_wall(key: Vector3i) -> bool
+func place_object(cell: Vector2i, rotation_steps: int = -1, sub_offset: Vector3 = Vector3.ZERO) -> bool
+func place_object_item(item: BuildItem, cell: Vector2i, rotation_steps: int = 0, sub_offset: Vector3 = Vector3.ZERO) -> bool
 func erase_at(cell: Vector2i, wall: Vector3i) -> bool
 
 signal pieces_changed
@@ -805,6 +929,9 @@ func frame_grid(center: Vector3, size: float) -> void
 var cell: Vector2i
 var wall_key: Vector3i
 var is_wall: bool
+var item_id: StringName
+var object_rotation_steps: int
+var sub_offset: Vector3
 
 func set_dimensions(size: Vector3) -> void
 ```
@@ -885,8 +1012,9 @@ NAV_SMOKE_TEST_OK
 - **Expansión solo hacia +X/+Z:** el origen (celda `0,0`) no se mueve, así que
   `set_grid_size` / `expand` no agrandan hacia coordenadas negativas.
 - **Sin rotación del nodo:** la matemática asume ejes alineados al mundo.
-- **Una pieza por celda/borde:** no hay muros compuestos ni piezas de varias
-  celdas.
+- **Suelos y paredes de una celda:** los muebles pueden ocupar varias celdas
+  (huella) y desplazarse en pasos de sub-grilla de 0,5 m; no hay muros
+  compuestos.
 - **Sin persistencia:** las construcciones viven solo en memoria de la escena.
 - **Sin deshacer/rehacer.**
 - **Sin validación estructural:** se puede colocar una pared sin suelo y un

@@ -200,6 +200,11 @@ func get_poi_transform(slot: int) -> Transform3D:
 
 	var result := _slots[slot].global_transform
 	result.origin.y = global_position.y
+	# Sin POI del prefab: correr el punto de alineación hacia el frente del
+	# mueble para que la cadera caiga sobre el asiento y no sobre el respaldo.
+	var box := _local_aabb()
+	if box.size.z > 0.01:
+		result.origin -= result.basis.z.normalized() * box.size.z * 0.35
 	return result
 
 
@@ -232,14 +237,38 @@ func _collect_slots() -> void:
 	)
 
 
-## Un objeto sin slots igual puede usarse: crea uno implícito en el origen.
+## Un objeto sin slots igual puede usarse: crea uno implícito en el centro del
+## mueble, a la altura típica de uso (asiento, mostrador, cama).
 func _ensure_fallback_slot() -> void:
 	if not _slots.is_empty():
 		return
 	var fallback := Marker3D.new()
 	fallback.name = "Slot_0"
+	var box := _local_aabb()
+	var height := box.size.y if box.size.y > 0.1 else 0.9
+	var center := box.get_center()
+	fallback.position = Vector3(center.x, height * 0.5, center.z)
 	add_child(fallback)
 	_slots.append(fallback)
+
+
+## AABB de toda la geometría visible, en espacio local del SmartObject.
+func _local_aabb() -> AABB:
+	var box := AABB()
+	var found := false
+	var inverse := global_transform.affine_inverse()
+	var stack: Array[Node] = [self]
+	while not stack.is_empty():
+		var current: Node = stack.pop_back()
+		if current is VisualInstance3D:
+			var visual := current as VisualInstance3D
+			var local := inverse * visual.global_transform
+			var b: AABB = local * visual.get_aabb()
+			box = b if not found else box.merge(b)
+			found = true
+		for child in current.get_children():
+			stack.append(child)
+	return box if found else AABB()
 
 
 func _reset_slots() -> void:

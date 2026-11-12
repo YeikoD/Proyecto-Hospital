@@ -20,7 +20,14 @@ signal npc_despawned(npc: NpcAgent)
 
 const NPC_GROUP := &"spawned_npcs"
 const SPAWNER_GROUP := &"npc_spawners"
+const PLAYER_GROUP := &"player"
 const DEFAULT_NPC_SCENE := preload("res://scripts/characters/npc/npc.tscn")
+const ROUTE_FSM_SCRIPT := preload("res://scripts/characters/npc/npc_route_fsm.gd")
+
+## Distancia maxima entre el POI y el punto caminable que devuelve el NavMesh.
+## Si el mapa esta vacio o el punto queda lejos (por ejemplo, durante un
+## rebake), se usa la posicion del propio POI en vez del resultado.
+const NAV_SNAP_MAX_DISTANCE := 4.0
 
 ## Registro estatico: igual que SmartObjectRegistry funciona en tests headless.
 static var _spawners: Array = []
@@ -39,6 +46,9 @@ static var _spawners: Array = []
 @export var spawn_interval_max := 16.0
 ## Espera inicial antes de la primera aparicion.
 @export var initial_delay := 2.0
+## No aparecen NPCs si el jugador esta a menos de esta distancia del POI.
+## Evita que la gente surja "de la nada" delante del jugador. `0` = sin limite.
+@export var min_player_distance := 0.0
 
 @export_group("Objetivo")
 ## Si es true, no aparece un NPC hasta que exista un SmartObject libre.
@@ -47,6 +57,22 @@ static var _spawners: Array = []
 ## Radio de busqueda del objetivo. `0` = sin limite: el spawner puede estar
 ## lejos del hospital y el NPC igual aparece y camina hasta la grilla.
 @export var objective_search_radius := 0.0
+
+@export_group("Ruta")
+## Si se asigna, el NPC camina desde este spawner hasta el nodo destino
+## (normalmente otro NpcSpawner) en vez de buscar un mueble y volver.
+@export var route_target_path: NodePath
+## Si es true, el NPC va de ida y vuelta entre este spawner y el destino.
+@export var route_loop := false
+## Cantidad de tramos antes de desaparecer: A->B cuenta 1, B->A cuenta 2.
+## `0` = sin limite. Solo aplica con `route_loop = true`.
+@export_range(0, 50) var route_trips := 2
+@export var route_wait_at_target := 2.0
+@export_range(0.0, 1.0, 0.01) var route_smart_object_chance := 0.25
+## Radio para desviarse a un SmartObject durante la ruta. 0 = sin limite.
+@export var route_smart_object_radius := 12.0
+@export var route_smart_object_timeout := 15.0
+@export var route_think_interval := 1.5
 
 @export_group("Vida del NPC")
 ## Necesidad que el NPC llega con ganas de satisfacer.
@@ -110,9 +136,24 @@ func can_spawn() -> bool:
 		return false
 	if not _nav_ready():
 		return false
-	if require_objective and not has_objective():
+	# En modo ruta el objetivo es el nodo destino, no un SmartObject.
+	if not has_route() and require_objective and not has_objective():
+		return false
+	if min_player_distance > 0.0 and _player_near_spawn_point():
 		return false
 	return true
+
+
+## El spawner tiene una ruta configurada y el destino existe.
+func has_route() -> bool:
+	return not route_target_path.is_empty() and _resolve_route_target() != null
+
+
+func _resolve_route_target() -> Node3D:
+	if route_target_path.is_empty():
+		return null
+	var node := get_node_or_null(route_target_path)
+	return node as Node3D
 
 
 ## Hay algun SmartObject libre con la affordance objetivo.
@@ -149,12 +190,41 @@ func spawn_now() -> NpcAgent:
 
 ## Punto caminable mas cercano al spawner (con dispersion opcional).
 func get_spawn_point() -> Vector3:
-	var target := global_position
-	if is_inside_tree():
-		var map := get_world_3d().navigation_map
-		if NavigationServer3D.map_get_iteration_id(map) != 0:
-			target = NavigationServer3D.map_get_closest_point(map, target)
-	return target
+	return _snap_to_nav(global_position)
+
+
+## Ajusta un punto al NavMesh sin aceptar resultados invalidos.
+##
+## `map_get_closest_point()` devuelve `(0,0,0)` cuando el mapa todavia no tiene
+## poligonos (por ejemplo durante un rebake). Si eso pasara, los NPC
+## aparecerian en el centro del mundo. En ese caso devolvemos el propio punto,
+## que siempre es el POI.
+func _snap_to_nav(point: Vector3) -> Vector3:
+	if not is_inside_tree():
+		return point
+	var map := get_world_3d().navigation_map
+	if NavigationServer3D.map_get_iteration_id(map) == 0:
+		return point
+	var closest := NavigationServer3D.map_get_closest_point(map, point)
+	if closest.is_zero_approx() and not point.is_zero_approx():
+		return point
+	if closest.distance_to(point) > NAV_SNAP_MAX_DISTANCE:
+		return point
+	return closest
+
+
+## Hay un jugador dentro de `min_player_distance` del POI.
+func _player_near_spawn_point() -> bool:
+	if not is_inside_tree():
+		return false
+	var point := get_spawn_point()
+	for node in get_tree().get_nodes_in_group(PLAYER_GROUP):
+		var body := node as Node3D
+		if body == null or not is_instance_valid(body):
+			continue
+		if body.global_position.distance_to(point) < min_player_distance:
+			return true
+	return false
 
 
 # --------------------------------------------------------------------------
@@ -171,7 +241,7 @@ func _process(delta: float) -> void:
 	# en vez de quedar insistiendo cada frame.
 	_timer = _next_interval()
 	if spawn_now() == null and OS.is_debug_build():
-		print("[NpcSpawner] %s: sin objetivo libre, reintento en %.1fs" % [name, _timer])
+		print("[NpcSpawner] %s: no puede aparecer todavia, reintento en %.1fs" % [name, _timer])
 
 
 func _next_interval() -> float:
@@ -182,6 +252,9 @@ func _next_interval() -> float:
 
 func _nav_ready() -> bool:
 	if not is_inside_tree():
+		return false
+	# Durante un rebake el NavMesh queda vacio un instante: no spawnear.
+	if BuildNavigation.is_any_baking():
 		return false
 	var map := get_world_3d().navigation_map
 	return NavigationServer3D.map_get_iteration_id(map) != 0
@@ -204,6 +277,9 @@ func _configure_npc(npc: NpcAgent) -> void:
 	npc.wander = false
 
 	var brain := npc.get_node_or_null("NpcBrain") as NpcBrain
+	var route_target := _resolve_route_target()
+	var route_mode := route_target != null
+
 	if brain != null:
 		var need_key := String(need)
 		var start := clampf(need_start, 0.0, 1.0)
@@ -212,13 +288,30 @@ func _configure_npc(npc: NpcAgent) -> void:
 		brain.need_affordances = {need_key: objective_affordance}
 		brain.need_threshold = minf(start, 0.5)
 		brain.search_radius = brain_search_radius
-		brain.set_enabled(true)
+		# En modo ruta el NpcRouteFSM enciende el cerebro solo cuando decide
+		# desviarse a usar un SmartObject.
+		brain.set_enabled(not route_mode)
 
-	var cycle := NpcSpawnCycle.new()
-	cycle.name = "NpcSpawnCycle"
-	cycle.search_timeout = search_timeout
-	cycle.return_retry_delay = return_retry_delay
-	npc.add_child(cycle)
+	if route_mode:
+		var route: Node = ROUTE_FSM_SCRIPT.new()
+		route.name = "NpcRouteFSM"
+		route.set("target_node", route_target)
+		route.set("source_spawner", self)
+		route.set("loop_route", route_loop)
+		route.set("max_trips", route_trips)
+		route.set("wait_at_target", route_wait_at_target)
+		route.set("smart_object_chance", route_smart_object_chance)
+		route.set("smart_object_radius", route_smart_object_radius)
+		route.set("smart_object_timeout", route_smart_object_timeout)
+		route.set("think_interval", route_think_interval)
+		route.set("affordance", objective_affordance)
+		npc.add_child(route)
+	else:
+		var cycle := NpcSpawnCycle.new()
+		cycle.name = "NpcSpawnCycle"
+		cycle.search_timeout = search_timeout
+		cycle.return_retry_delay = return_retry_delay
+		npc.add_child(cycle)
 
 
 # --------------------------------------------------------------------------

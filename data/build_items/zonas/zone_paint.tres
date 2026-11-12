@@ -1,0 +1,15 @@
+﻿[gd_resource type="Resource" script_class="BuildItem" format=3]
+
+[ext_resource type="Script" path="res://scripts/systems/build/build_item.gd" id="1_script"]
+[ext_resource type="Texture2D" path="res://icon.svg" id="2_preview"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"zone_paint"
+display_name = "Pincel de zona"
+category = "zonas"
+subcategory = "pinceles"
+object_type = "zone_paint"
+preview = ExtResource("2_preview")
+preview_tint = Color(0.55, 0.72, 1, 1)
+notes = "Pinta zonas arrastrando un rectangulo. Clic sobre una zona para asignarle un tipo."

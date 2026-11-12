@@ -1,0 +1,15 @@
+﻿[gd_resource type="Resource" script_class="BuildItem" format=3]
+
+[ext_resource type="Script" path="res://scripts/systems/build/build_item.gd" id="1_script"]
+[ext_resource type="Texture2D" path="res://icon.svg" id="2_preview"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"zone_erase"
+display_name = "Borrador de zona"
+category = "zonas"
+subcategory = "pinceles"
+object_type = "zone_erase"
+preview = ExtResource("2_preview")
+preview_tint = Color(1, 0.32, 0.28, 1)
+notes = "Borra zonas arrastrando un rectangulo."

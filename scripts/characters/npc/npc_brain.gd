@@ -305,6 +305,8 @@ func _walk_to_grid_gateway() -> bool:
 	for i in attempts:
 		var cell_point: Vector3 = points[i]
 		var nav_point := NavigationServer3D.map_get_closest_point(map, cell_point)
+		if nav_point.is_zero_approx() and not cell_point.is_zero_approx():
+			continue
 		if nav_point.distance_to(cell_point) > 1.0:
 			continue
 		# Ya esta en la entrada: no hace falta otro tramo.

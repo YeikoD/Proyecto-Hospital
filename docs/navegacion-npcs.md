@@ -55,9 +55,14 @@ piezas.
 | `scripts/systems/build/build_system.tscn` | Ensambla grilla, cámara, `NavRegion`, controlador y navegación. |
 | `scripts/systems/build/build_controller.gd` | Emite `pieces_changed` y expone la API de colocación. |
 | `scripts/characters/npc/npc_agent.gd` | `CharacterBody3D` con `NavigationAgent3D`, deambular y animación. |
+| `scripts/characters/npc/npc_brain.gd` | FSM de necesidades + uso de SmartObjects. |
+| `scripts/characters/npc/npc_spawner.gd` | Spawners, población y configuración de rutas. |
+| `scripts/characters/npc/npc_route_fsm.gd` | FSM/selector de ruta A→B con desvío aleatorio a SmartObjects. |
+| `scripts/characters/npc/npc_spawn_cycle.gd` | Ciclo aparición → buscar mueble → volver → desaparecer. |
 | `scripts/characters/npc/npc.tscn` | Prefab de NPC con el modelo y las animaciones del jugador. |
 | `scenes/demos/nav_demo.tscn` | Demo con habitaciones, puertas, 4 NPC y HUD. |
 | `tests/nav_smoke_test.gd` | Prueba headless del NavMesh y del rebake. |
+| `tests/npc_avoidance_smoke_test.gd` | Prueba headless de evasión entre NPCs. |
 
 ---
 
@@ -209,6 +214,10 @@ El modelo `human.glb` conserva la rotación de 180° que usa el jugador para
 quedar mirando hacia `-Z`. `NpcAgent` gira el nodo `Visual`, no el cuerpo físico,
 para que la cápsula y el agente de navegación no se vean afectados.
 
+En colisiones, el NPC vive en la **capa 2** y su máscara es **3**: choca con el
+escenario/jugador (capa 1) y con los demás NPC (capa 2). El jugador también
+incluye la capa 2 en su máscara, así que no puede atravesar a un NPC.
+
 `NpcAgent` detecta automáticamente:
 
 - el `NavigationAgent3D` hijo;
@@ -237,6 +246,29 @@ func _physics_process(delta):
 
 La altura del camino se ignora para el movimiento horizontal; la gravedad y
 `move_and_slide()` se encargan de mantener al NPC apoyado en el suelo.
+
+#### Evitación entre NPCs
+
+Además de la colisión física, cada NPC revisa un cono frontal de
+`npc_look_ahead` (3.6 m) contra el grupo `npc_agents`. Si hay otro NPC adelante
+durante `npc_avoid_delay` (0.15 s), calcula un destino temporal al costado
+(`npc_avoid_side`, 1.2 m) y recalcula la ruta con
+`NavigationServer3D.map_get_path()`. Al alcanzar ese punto retoma el destino
+original guardado en `_target`.
+
+- De frente, cada NPC se aparta hacia su propia derecha: como caminan en
+  sentidos opuestos, pasan por lados distintos.
+- Si el otro NPC está claramente a un lado, se aparta hacia el lado opuesto.
+- No se desvía de un NPC que camina en la misma dirección (fila india), salvo
+  que esté muy cerca: así no zigzaguea detrás de alguien más lento.
+- La ruta principal nunca se pierde: el desvío es temporal y solo cambia
+  `NavigationAgent3D.target_position`.
+- Si no hay camino válido para el desvío, la colisión física sigue impidiendo
+  el atravesamiento y se reintenta después de un cooldown de 0.5 s.
+
+Los tres valores se pueden ajustar en el inspector del `NpcAgent`
+(`Evasion`): `npc_look_ahead`, `npc_avoid_delay` y `npc_avoid_side`.
+`avoid_other_npcs = false` desactiva el desvío, pero no la colisión física.
 
 ### 4.3 Deambular
 
@@ -319,6 +351,61 @@ velocidad del NPC:
 _anim.sync_locomotion_points(speed, speed * 1.6)
 ```
 
+### 4.8 Rutas A→B y SmartObjects (`NpcRouteFSM`)
+
+`NpcSpawner` puede trabajar en **modo ruta**. En vez de buscar un mueble y
+volver, el NPC camina desde su spawner hasta un nodo destino (normalmente otro
+spawner):
+
+```
+A (spawner) ──> B (target_node)
+```
+
+Configuración en el inspector del spawner, grupo **Ruta**:
+
+| Propiedad | Uso |
+| --- | --- |
+| `route_target_path` | Nodo destino. Si está vacío, el spawner usa el ciclo normal. |
+| `route_loop` | `false` = desaparece al llegar a B; `true` = hace ida y vuelta. |
+| `route_trips` | Tramos antes de desaparecer: A→B = 1, B→A = 2 (`0` = infinito). |
+| `route_wait_at_target` | Pausa en cada extremo. |
+| `route_smart_object_chance` | Probabilidad de desviarse a un SmartObject. |
+| `route_smart_object_radius` | Radio de búsqueda (`0` = sin límite). |
+| `route_smart_object_timeout` | Tiempo máximo sin empezar la interacción. |
+| `route_think_interval` | Cada cuánto se reevalúa el selector mientras camina. |
+
+El `NpcRouteFSM` es un FSM con un **selector de comportamiento**:
+
+```
+mientras viaja:
+  1. ¿hay un SmartObject libre cerca y toca la tirada aleatoria?
+       └─ sí → USE_SMART_OBJECT (delegado a NpcBrain)
+  2. ¿llegó al destino?
+       └─ sí → WAIT
+              ├─ quedan tramos y loop activo → volver al otro extremo
+              └─ no quedan tramos → desaparecer
+  3. si no → seguir caminando
+```
+
+- Con `route_loop = true` la ruta es **de ida y vuelta**: `A → B → A → B…`.
+  Cada tramo vuelve a tirar el dado de SmartObjects, así el NPC también puede
+  desviarse mientras vuelve.
+- `route_trips` corta el bucle de forma natural: con `2` el NPC hace
+  `A → B → A` y desaparece al llegar. Con `0` camina para siempre.
+- El desvío se intenta **una vez por tramo** (al pasar cerca del primer
+  SmartObject disponible), así solo *algunos* NPCs deciden usarlo.
+- `NpcBrain` sigue siendo el encargado de reservar el slot, viajar al mueble,
+  animar la interacción y liberarlo; el FSM de ruta solo lo enciende y espera.
+- Al terminar la interacción (o vencer el timeout), el FSM apaga el cerebro y
+  retoma la ruta al extremo que corresponda.
+- En `map1.tscn` **los dos spawners están activos** y apuntan uno al otro, así
+  aparecen NPCs caminando en ambas direcciones. Cada uno hace una ida y vuelta
+  (`route_trips = 2`) y desaparece al volver.
+- El spawn y el despawn ocurren **solo en el POI**. `get_spawn_point()` descarta
+  el `(0,0,0)` transitorio de `map_get_closest_point()` durante un rebake y los
+  spawners no generan NPCs mientras `BuildNavigation.is_any_baking()` sea true.
+  Antes de liberar, el FSM comprueba que el NPC esté realmente en el extremo.
+
 ---
 
 ## 5. Demo
@@ -336,7 +423,7 @@ Para probar:
 
 1. Ejecutar `scenes/demos/nav_demo.tscn`.
 2. Observar a los NPC deambular y atravesar las puertas.
-3. Pulsar **B**, elegir pared (2) y cerrar una puerta.
+3. Pulsar **B**, abrir el menú con **M**, elegir la pared y cerrar una puerta.
 4. Al terminar el debounce, el NavMesh se rehornea y los NPC rodean el nuevo
    obstáculo.
 
@@ -383,6 +470,27 @@ Resultado esperado:
 NAV_MAP_SMOKE_TEST_OK
 ```
 
+### 6.2 Prueba de evasión entre NPCs
+
+```powershell
+Godot.exe --headless --path . --script res://tests/npc_avoidance_smoke_test.gd
+```
+
+Usa un NavMesh sintético (sin cargar el hospital) y comprueba que dos NPC que
+caminan de frente:
+
+1. se detectan en el cono frontal;
+2. inician un desvío sin perder el destino original;
+3. empiezan a desviarse con ~2 m de margen antes del contacto;
+4. no se tocan al cruzarse (distancia mínima ≥ 0.75 m);
+5. llegan ambos al extremo opuesto.
+
+Resultado esperado:
+
+```
+NPC_AVOIDANCE_SMOKE_TEST_OK
+```
+
 ---
 
 ## 7. Rendimiento y límites
@@ -405,8 +513,9 @@ NAV_MAP_SMOKE_TEST_OK
 - **Costo del mapa completo.** `include_scene_geometry` hornea toda la
   geometría del grupo; en mapas grandes conviene subir `cell_size` (0.15–0.2)
   o marcar sólo el suelo/terreno necesario, no todos los props.
-- **Sin evitación entre NPCs.** `avoidance_enabled` está desactivado; los NPC se
-  atraviesan entre sí (colisionan con el escenario).
+- **Evitación local entre NPCs.** Se apartan con un desvío corto y colisión
+  física, pero no hay planificación global de multitudes ni colas. En pasillos
+  muy angostos pueden esperar a que el otro termine de pasar.
 - **Paredes de altura variable.** El límite vertical asume que las paredes son
   más altas que `agent_height + 0.5`; paredes muy bajas podrían generar
   superficies caminables sobre su parte superior.
@@ -426,5 +535,6 @@ NAV_MAP_SMOKE_TEST_OK
 - `scripts/characters/npc/npc.tscn`
 - `scenes/demos/nav_demo.tscn`
 - `tests/nav_smoke_test.gd`
+- `tests/npc_avoidance_smoke_test.gd`
 - `docs/construccion.md`
 - `docs/sistema-grilla.md`

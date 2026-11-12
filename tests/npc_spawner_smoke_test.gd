@@ -58,6 +58,44 @@ func _run() -> void:
 	_check(spawner.has_objective(), "hay un SmartObject libre como objetivo")
 	_check(NpcSpawner.count_alive() == 0, "no hay NPCs generados al inicio")
 
+	# --- Seguridad de aparicion -------------------------------------------
+	# El punto de spawn queda en el POI, nunca en el origen del mundo.
+	var spawn_point := spawner.get_spawn_point()
+	_check(not spawn_point.is_zero_approx(), "el punto de spawn no es el origen")
+	_check(spawn_point.distance_to(spawner.global_position) < 2.0,
+		"el punto de spawn queda en el POI")
+
+	# Sin jugador cerca el POI puede aparecer; con el jugador encima, no.
+	var demo_player := demo.get_node("FPSPlayer") as Node3D
+	var saved_player := demo_player.global_position
+	spawner.min_player_distance = 8.0
+	demo_player.global_position = Vector3(0.0, 0.0, 200.0)
+	_check(spawner.can_spawn(), "sin jugador cerca el POI puede aparecer")
+	demo_player.global_position = spawn_point
+	_check(not spawner.can_spawn(), "con el jugador en el POI no aparece")
+	demo_player.global_position = Vector3(0.0, 0.0, 200.0)
+	_check(spawner.can_spawn(), "al alejarse el jugador vuelve a permitir spawn")
+	demo_player.global_position = saved_player
+	spawner.min_player_distance = 0.0
+
+	# Un POI lejos del NavMesh conserva su posicion (no salta a la celda
+	# caminable mas cercana ni al origen del mundo).
+	var far_packed: PackedScene = load("res://scripts/characters/npc/npc_spawner.tscn")
+	var far_spawner: NpcSpawner = far_packed.instantiate() as NpcSpawner
+	demo.add_child(far_spawner)
+	far_spawner.global_position = Vector3(500.0, 0.0, 500.0)
+	_check(far_spawner.get_spawn_point().distance_to(far_spawner.global_position) < 0.001,
+		"un POI lejos del NavMesh conserva su posicion")
+	far_spawner.queue_free()
+	await process_frame
+
+	# Mientras se hornea no se permite aparecer (el NavMesh queda vacio).
+	nav.bake_now()
+	_check(BuildNavigation.is_any_baking(), "el horneado se marca como en curso")
+	_check(not spawner._nav_ready(), "no se aparece durante un horneado")
+	await nav.navigation_baked
+	_check(spawner._nav_ready(), "al terminar el horneado se vuelve a permitir")
+
 	# --- Tope global ------------------------------------------------------
 	var first: NpcAgent = spawner.spawn_now()
 	_check(first != null, "spawn_now crea un NPC")

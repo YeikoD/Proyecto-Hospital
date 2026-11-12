@@ -14,6 +14,9 @@ extends Node3D
 ##   axis 1 -> borde horizontal (normal en Z), `z` es el indice del borde
 
 const GRID_SHADER := preload("res://scripts/systems/build/shaders/grid.gdshader")
+## La grilla secundaria se dibuja justo sobre la cara superior del piso. Este
+## pequeno extra evita que el slab del piso la tape o que haya z-fighting.
+const FLOOR_GRID_LIFT := 0.006
 
 @export var wall_thickness := 0.2:
 	set(value):
@@ -42,6 +45,43 @@ const GRID_SHADER := preload("res://scripts/systems/build/shaders/grid.gdshader"
 		show_border = value
 		_refresh_overlay()
 
+@export_group("Grilla sobre pisos")
+## Dibuja una segunda grilla que solo cubre las celdas con piso colocado, a la
+## altura de la cara superior del piso (para que el slab no la tape).
+@export var show_floor_grid := true:
+	set(value):
+		show_floor_grid = value
+		_rebuild_floor_overlay()
+## Multiplicador de opacidad de esa segunda grilla. Menor que 1 la hace mas
+## transparente que la grilla principal.
+@export_range(0.0, 1.0, 0.01) var floor_grid_opacity := 0.6:
+	set(value):
+		floor_grid_opacity = clampf(value, 0.0, 1.0)
+		_refresh_floor_material()
+
+@export_group("Sub-grilla")
+## Divisiones por celda de la sub-grilla. `2` divide cada metro cuadrado en 4
+## (paso de 0,5 m), como el modo de precision de Los Sims.
+@export_range(1, 8, 1) var subdivisions := 2:
+	set(value):
+		subdivisions = clampi(value, 1, 8)
+		_refresh_overlay()
+## Dibuja las lineas finas de la sub-grilla.
+@export var show_subdivisions := true:
+	set(value):
+		show_subdivisions = value
+		_refresh_overlay()
+## Largo de cada guion de la sub-grilla, en celdas (0.1 = 10 cm).
+@export_range(0.02, 0.5, 0.01) var sub_dash_length := 0.1:
+	set(value):
+		sub_dash_length = clampf(value, 0.01, 0.5)
+		_refresh_overlay()
+## Separacion entre guiones, en celdas (0.1 = 10 cm).
+@export_range(0.0, 0.5, 0.01) var sub_dash_gap := 0.1:
+	set(value):
+		sub_dash_gap = clampf(value, 0.0, 0.5)
+		_refresh_overlay()
+
 ## Se emite cuando cambia el tamano de la grilla (manual o automaticamente).
 signal grid_resized(cells_x: int, cells_z: int)
 
@@ -64,6 +104,12 @@ signal grid_resized(cells_x: int, cells_z: int)
 var _overlay: MeshInstance3D
 var _material: ShaderMaterial
 var _plane: PlaneMesh
+## Segunda grilla: un quad por cada celda con piso colocado.
+var _floor_overlay: MeshInstance3D
+var _floor_material: ShaderMaterial
+var _floor_cells: Array[Vector2i] = []
+## Altura de la cara superior de cada piso, en coordenadas de mundo.
+var _floor_tops := PackedFloat32Array()
 
 
 func _ready() -> void:
@@ -113,6 +159,25 @@ func center_point() -> Vector3:
 		global_position.x + cells_x * cell_size * 0.5,
 		plane_global_y(),
 		global_position.z + cells_z * cell_size * 0.5
+	)
+
+
+## Paso de la sub-grilla en metros (0,5 con `subdivisions = 2`).
+func sub_cell_size() -> float:
+	return cell_size / float(maxi(subdivisions, 1))
+
+
+## Ajusta un desplazamiento XZ al paso de la sub-grilla. `max_steps` limita
+## cuantos pasos finos se permite mover respecto del centro de la huella.
+func snap_offset(delta: Vector2, max_steps: int = 1) -> Vector3:
+	if subdivisions <= 1:
+		return Vector3.ZERO
+	var step := sub_cell_size()
+	var limit := step * float(maxi(max_steps, 0))
+	return Vector3(
+		clampf(roundf(delta.x / step) * step, -limit, limit),
+		0.0,
+		clampf(roundf(delta.y / step) * step, -limit, limit)
 	)
 
 
@@ -244,6 +309,21 @@ func wall_keys_around_cell(cell: Vector2i) -> Array[Vector3i]:
 # Visual
 # --------------------------------------------------------------------------
 
+## Actualiza la grilla secundaria. `cells` son las celdas con piso colocado y
+## `tops` la altura de la cara superior de cada piso en coordenadas de mundo.
+func set_floor_cells(cells: Array[Vector2i], tops: PackedFloat32Array) -> void:
+	_floor_cells = cells.duplicate()
+	_floor_tops = tops.duplicate()
+	_rebuild_floor_overlay()
+
+
+## Quita por completo la grilla secundaria (no hay pisos colocados).
+func clear_floor_cells() -> void:
+	_floor_cells.clear()
+	_floor_tops.clear()
+	_rebuild_floor_overlay()
+
+
 func _build_overlay() -> void:
 	if _overlay != null:
 		_refresh_overlay()
@@ -259,6 +339,17 @@ func _build_overlay() -> void:
 	_overlay.material_override = _material
 	_overlay.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(_overlay)
+
+	_floor_material = ShaderMaterial.new()
+	_floor_material.shader = GRID_SHADER
+
+	_floor_overlay = MeshInstance3D.new()
+	_floor_overlay.name = "FloorGridOverlay"
+	_floor_overlay.material_override = _floor_material
+	_floor_overlay.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_floor_overlay.visible = false
+	add_child(_floor_overlay)
+
 	_refresh_overlay()
 
 
@@ -271,6 +362,82 @@ func _refresh_overlay() -> void:
 	_material.set_shader_parameter("cell_size", cell_size)
 	_material.set_shader_parameter("grid_extent", Vector2(cells_x, cells_z))
 	_material.set_shader_parameter("show_border", show_border)
+	_material.set_shader_parameter("subdivisions", subdivisions)
+	_material.set_shader_parameter("show_subdivisions", show_subdivisions)
+	_material.set_shader_parameter("sub_dash_length", sub_dash_length)
+	_material.set_shader_parameter("sub_dash_gap", sub_dash_gap)
 	var reach := maxf(size.x, size.y)
 	_material.set_shader_parameter("fade_start", reach * 2.0)
 	_material.set_shader_parameter("fade_end", reach * 3.5)
+	_refresh_floor_material()
+	_rebuild_floor_overlay()
+
+
+## Aplica los parametros comunes a la grilla de pisos. Las alphas salen de las
+## de la grilla principal multiplicadas por `floor_grid_opacity`.
+func _refresh_floor_material() -> void:
+	if _floor_material == null:
+		return
+	_floor_material.set_shader_parameter("cell_size", cell_size)
+	_floor_material.set_shader_parameter("grid_extent", Vector2(cells_x, cells_z))
+	_floor_material.set_shader_parameter("show_border", show_border)
+	_floor_material.set_shader_parameter("subdivisions", subdivisions)
+	_floor_material.set_shader_parameter("show_subdivisions", show_subdivisions)
+	_floor_material.set_shader_parameter("sub_dash_length", sub_dash_length)
+	_floor_material.set_shader_parameter("sub_dash_gap", sub_dash_gap)
+	var size := Vector2(cells_x * cell_size, cells_z * cell_size)
+	var reach := maxf(size.x, size.y)
+	_floor_material.set_shader_parameter("fade_start", reach * 2.0)
+	_floor_material.set_shader_parameter("fade_end", reach * 3.5)
+	var opacity := clampf(floor_grid_opacity, 0.0, 1.0)
+	_floor_material.set_shader_parameter(
+		"fill_color", Color(1.0, 1.0, 1.0, 0.03 * opacity)
+	)
+	_floor_material.set_shader_parameter(
+		"minor_color", Color(1.0, 1.0, 1.0, 0.32 * opacity)
+	)
+	_floor_material.set_shader_parameter(
+		"border_color", Color(1.0, 1.0, 1.0, 0.95 * opacity)
+	)
+	_floor_material.set_shader_parameter(
+		"sub_color", Color(1.0, 1.0, 1.0, 0.24 * opacity)
+	)
+
+
+## Reconstruye la malla de la grilla de pisos: un quad por celda, a la altura
+## de la cara superior de su piso. Las coordenadas se centran igual que el
+## plano principal para que el patron del shader quede alineado.
+func _rebuild_floor_overlay() -> void:
+	if _floor_overlay == null:
+		return
+	var count := mini(_floor_cells.size(), _floor_tops.size())
+	if not show_floor_grid or count == 0:
+		_floor_overlay.mesh = null
+		_floor_overlay.visible = false
+		return
+
+	var half := Vector2(cells_x * cell_size, cells_z * cell_size) * 0.5
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for i in count:
+		var cell := _floor_cells[i]
+		var y := _floor_tops[i] + FLOOR_GRID_LIFT - global_position.y
+		var x0 := float(cell.x) * cell_size - half.x
+		var z0 := float(cell.y) * cell_size - half.y
+		_add_floor_quad(st, x0, x0 + cell_size, z0, z0 + cell_size, y)
+	_floor_overlay.mesh = st.commit()
+
+	_floor_overlay.position = Vector3(half.x, 0.0, half.y)
+	_floor_overlay.visible = true
+
+
+static func _add_floor_quad(
+	st: SurfaceTool, x0: float, x1: float, z0: float, z1: float, y: float
+) -> void:
+	st.set_normal(Vector3.UP)
+	st.add_vertex(Vector3(x0, y, z0))
+	st.add_vertex(Vector3(x0, y, z1))
+	st.add_vertex(Vector3(x1, y, z1))
+	st.add_vertex(Vector3(x0, y, z0))
+	st.add_vertex(Vector3(x1, y, z1))
+	st.add_vertex(Vector3(x1, y, z0))

@@ -59,11 +59,12 @@ de cada sección:
   - **Baldosas** *(futuro)*: pinturas/materiales para cambiar el aspecto de los
     suelos ya construidos desde **Base**.
   - **Aberturas**: reservado (puertas, etc.).
+- **Zonas**: pincel y borrador de zonas lógicas.
 - **Objetos** *(pestaña independiente de Construir)*: muebles/props colocables
   y sus herramientas (por ejemplo la silla y el borrador de objetos).
 
 Los borradores son ítems del menú (no una herramienta global): cada uno elimina
-solo su tipo. El atajo `3` sigue disponible como borrado general.
+solo su tipo.
 
 Los borradores de **pared** y **piso** funcionan con el mismo gesto que sus
 pinceles de construcción: clic y arrastrar muestra en rojo lo que se va a
@@ -76,6 +77,40 @@ suelo y cada piso se encoge en el plano, escalonados en el orden del trazado
 (como el efecto de obra pero al revés). La colisión de cada pieza se desactiva
 al instante para que el NavMesh no la tenga en cuenta mientras termina la
 animación.
+
+## Zonas
+
+Las zonas son áreas lógicas pintadas sobre el piso. Sirven para comunicar a la
+IA qué hay en cada parte del hospital (la IA se conectará más adelante).
+
+- **Pincel de zona** (pestaña **Zonas → Pinceles**): clic y arrastrar pinta un
+  **rectángulo** de celdas, igual que el pincel de pisos. La zona nace como
+  **“Sin asignar”**.
+- **Borrador de zona**: clic y arrastrar elimina las celdas de zona del
+  rectángulo. No toca suelos, paredes ni objetos.
+- Las zonas se ven **solo en modo construcción**, como un **área unida** (sin
+  cuadrados separados), con un borde en el perímetro y el **nombre del tipo en
+  el centro**.
+- Se ocultan automáticamente para no tapar las piezas: al elegir un **objeto**
+  (o su borrador) quedan ocultas mientras esa herramienta esté activa. Al
+  **pintar un piso** o **arrastrar una pared** se ocultan solo durante el
+  trazado y vuelven al soltar. Al entrar al modo construcción se ven siempre.
+- Al hacer **clic sobre una zona pintada** se abre el menú de asignación:
+  - **Pasillos**
+  - **Sala de espera**
+  - **Consultorio**
+- Cada trazo es una zona independiente: asignar un tipo afecta a todas las
+  celdas de ese trazo.
+- Las zonas se guardan en el JSON de construcción (`zones`) y se recargan con
+  el nivel.
+
+API para la futura IA:
+
+```gdscript
+signal zones_changed
+func get_zone_count() -> int
+func get_zone_type(cell: Vector2i) -> StringName
+```
 
 ## Integrarlo en una escena
 
@@ -106,6 +141,14 @@ Pasos recomendados:
      **Expandir ambos** (añaden `expand_step` celdas).
    - Opcional: activar `auto_expand` para que crezca sola al construir cerca
      del borde (`expand_step` y `expand_margin` controlan el comportamiento).
+   - `show_floor_grid` / `floor_grid_opacity`: segunda grilla que solo cubre las
+     celdas con piso colocado, apoyada sobre la cara superior del modelo y más
+     transparente que la principal.
+   - `subdivisions` / `show_subdivisions`: sub-grilla de precisión para mover
+     objetos. Con `subdivisions = 2` (default) cada metro cuadrado se divide en
+     4 y los objetos se colocan en pasos de **0,5 m**. Las líneas finas son
+     **discontinuas** (guiones de `sub_dash_length` separados por
+     `sub_dash_gap`, ambos en celdas) para distinguirlas de la grilla de 1 m.
    - También se puede cambiar por API con `set_grid_size(x, z)` o `expand(dx, dz)`.
    - Si el nivel usa una instancia de `build_system.tscn`, `BuildGrid` está
      **dentro de la instancia**, no como nodo propio del nivel. Para editarlo en
@@ -219,7 +262,9 @@ Un item puede usar:
 - `scene`: una escena/PackedScene o modelo importado (`.blend`, etc.).
 - `map_file`: un archivo `.map`/`.vmf` de FuncGodot, que se construirá al colocar la pieza.
 - `smart_object`: un `SmartObjectDef` que declara las acciones que la IA puede
-  realizar con el objeto. La escena debe tener raíz `SmartObject`. Ver
+  realizar con el objeto. Si la escena ya tiene raíz `SmartObject` se usa tal
+  cual; si es un modelo plano (`.glb`, escena suelta) el controlador la envuelve
+  automáticamente y crea un slot de uso en el centro del mueble. Ver
   [docs/smart-objects.md](smart-objects.md).
 
 Los items de tipo `furniture` / `prop` se colocan con la herramienta de objetos
@@ -279,8 +324,11 @@ previsualización plana propia (ver abajo).
   desde el principio para no afectar al NavMesh.
 - **Objetos**: la previsualización usa la escena del `BuildItem` (por ejemplo la
   silla con su asiento, respaldo y patas), gira con la tecla `R` y se coloca en
-  la misma celda y con el mismo desplazamiento que la pieza real. Al borrar, se
-  muestra el modelo del objeto que hay bajo el cursor.
+  la misma celda y con el mismo desplazamiento que la pieza real. Los objetos se
+  ajustan a una **sub-grilla de 0,5 m** (4 posiciones por metro cuadrado): al
+  mover el cursor dentro de la celda el mueble se desplaza en pasos finos, y la
+  huella ocupada se recalcula según el objeto desplazado. Al borrar, se muestra
+  el modelo del objeto que hay bajo el cursor.
 - Las previsualizaciones son puramente visuales: a los modelos se les quitan
   scripts (para que un `SmartObject` no se registre), colisiones, luces, cámaras
   y animaciones.
@@ -347,6 +395,10 @@ var is_valid := grid.is_cell_inside(cell)
 var edge := grid.wall_from_world(world_point)  # Vector3i(x, z, axis)
 var wall_center := grid.wall_center(edge)
 var yaw := grid.wall_yaw(edge)
+
+# Sub-grilla de objetos: paso fino y ajuste de un desplazamiento XZ.
+var step := grid.sub_cell_size()               # 0.5 con subdivisions = 2
+var offset := grid.snap_offset(Vector2(0.3, -0.2))  # -> (0.5, 0.0, 0.0)
 ```
 
 Convención de paredes: `Vector3i(x, z, axis)`, donde `axis = 0` es un borde con
@@ -360,6 +412,10 @@ largo de X y el controlador las rota según el borde.
 controller.place_floor(Vector2i(4, 5))
 controller.place_wall(Vector3i(4, 5, 1))
 controller.erase_at(Vector2i(4, 5), Vector3i(4, 5, 1))
+
+# Objetos: rotación en cuartos de vuelta y desplazamiento fino (0,5 m).
+controller.place_object(Vector2i(4, 5), 0, Vector3(0.5, 0.0, 0.0))
+controller.place_object_item(item, Vector2i(4, 5), 1, Vector3(0.0, 0.0, -0.5))
 
 # Cambios y limpieza.
 controller.pieces_changed.connect(_on_pieces_changed)
@@ -387,8 +443,9 @@ La de SmartObjects cubre la interacción completa con la silla animada.
   `BuildSystem` a la altura del suelo y, si hay desniveles, usar una zona plana.
 - Suelos y paredes son piezas de 1 celda; todavía no hay muros encadenados,
   pisos múltiples ni puertas.
-- Los objetos (muebles/props) ya se colocan y rotan, pero solo hay un SmartObject
-  de ejemplo (silla). Ver [docs/smart-objects.md](smart-objects.md).
+- Los objetos (muebles/props) ya se colocan y rotan, con precisión de 0,5 m
+  sobre una sub-grilla de 2×2 por celda, pero solo hay un SmartObject de
+  ejemplo (silla). Ver [docs/smart-objects.md](smart-objects.md).
 - Las piezas se instancian una por celda. Para edificios grandes se puede migrar
   a `MultiMesh` más adelante.
 - El borrado quita primero el objeto de la celda, después la pared más cercana

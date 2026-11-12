@@ -1,8 +1,8 @@
-[gd_resource type="Resource" script_class="BuildItem" format=3]
+[gd_resource type="Resource" script_class="BuildItem" format=3 uid="uid://chylvf2k3klvc"]
 
-[ext_resource type="Script" path="res://scripts/systems/build/build_item.gd" id="1_script"]
-[ext_resource type="Texture2D" path="res://icon.svg" id="2_preview"]
-[ext_resource type="PackedScene" path="res://scripts/systems/smart_objects/prefabs/chair.tscn" id="3_scene"]
+[ext_resource type="Script" uid="uid://dd6mq4ip22kt6" path="res://scripts/systems/build/build_item.gd" id="1_script"]
+[ext_resource type="PackedScene" uid="uid://srqhx22kyt2x" path="res://assets/models/construction/objects/chair_01.glb" id="2_msw4q"]
+[ext_resource type="Texture2D" uid="uid://c4bwlescynher" path="res://icon.svg" id="2_preview"]
 [ext_resource type="Resource" path="res://data/smart_objects/seat.tres" id="4_smart"]
 
 [resource]
@@ -13,8 +13,7 @@ category = "objetos"
 subcategory = "muebles"
 object_type = "furniture"
 preview = ExtResource("2_preview")
-scene = ExtResource("3_scene")
+scene = ExtResource("2_msw4q")
 smart_object = ExtResource("4_smart")
-footprint = Vector2i(1, 1)
 can_rotate = true
 notes = "SmartObject: affordance 'sit'."

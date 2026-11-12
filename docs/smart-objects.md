@@ -79,6 +79,11 @@ tests/animation_manager_smoke_test.gd
      existe, se calcula separándose del POI sobre su frente.
    - Un slot puede declarar `slot_tag` como metadato para aceptar solo ciertas
      affordances.
+   - **No hace falta** que el prefab tenga raíz `SmartObject`: si el `BuildItem`
+     define `smart_object`, un modelo plano (`.glb`) se envuelve
+     automáticamente. En ese caso se crea `Slot_0` a media altura del AABB y el
+     POI se corre hacia el frente para que el NPC quede sentado sobre el
+     asiento y no sobre el respaldo.
 3. **Item**: creá un `BuildItem` `.tres` en `res://data/build_items/...` con
    `object_type = "furniture"` (o `"prop"`), `scene` apuntando al prefab y
    `smart_object` apuntando a la definición.
@@ -252,6 +257,14 @@ con `NpcAgent.play_interaction()`.
 - Colocar un objeto emite `object_placed` y `pieces_changed`; `BuildNavigation`
   rehornea con debounce. El collider del mueble recorta el NavMesh.
 - `require_floor_for_objects` (en `BuildController`) exige un suelo debajo.
+- La huella multi-celda se reorienta al rotar: un mueble 2x1 pasa a ocupar 1x2
+  y su pivote se ubica en el centro de la huella (entre las dos celdas).
+- Los modelos GLB con el pivote descentrado (por ejemplo apoyado en una pata)
+  se recentran automáticamente en X/Z al colocarlos.
+- Los objetos se colocan sobre una sub-grilla de 0,5 m (`BuildGrid.subdivisions`).
+  La celda ancla no cambia, pero la huella ocupada se recalcula según el
+  desplazamiento fino, de modo que un mueble desplazado puede cubrir una celda
+  adicional.
 - Al borrar, el orden de prioridad es **objeto → pared → suelo**.
 - La IA mueve al NPC a `get_approach_position()`: el `NavigationAgent3D` lo
   ajusta a la superficie caminable, así el NPC nunca intenta entrar al
@@ -295,6 +308,4 @@ colisión desactivada durante el uso y la vuelta al punto de salida.
 - No hay IK ni extracción de root motion: la altura y el desplazamiento salen
   de la cadera del clip.
 - Sin persistencia de objetos ni de reservas.
-- La huella multi-celda funciona para ocupación, pero la rotación de huellas no
-  cuadradas todavía no se reorienta.
 - La navegación sigue siendo de una sola planta plana.

@@ -50,12 +50,28 @@ signal navigation_baked
 ## Cantidad de horneados completados (util para tests y diagnostico).
 var bake_count := 0
 
+## Instancias activas: permite a otros sistemas saber si hay un horneado en
+## curso (durante el bake el NavMesh queda vacio por un instante).
+static var _instances: Array = []
+
 var _bake_timer: Timer
 var _dirty := false
 var _baking := false
 
 
+## True si cualquier `BuildNavigation` de la escena esta horneando.
+## Los spawners lo consultan para no aparecer mientras el NavMesh no esta
+## sincronizado (evita que `map_get_closest_point` devuelva el origen).
+static func is_any_baking() -> bool:
+	for instance in _instances:
+		if is_instance_valid(instance) and instance.is_baking():
+			return true
+	return false
+
+
 func _ready() -> void:
+	if not _instances.has(self):
+		_instances.append(self)
 	_resolve_references()
 	if navigation_region == null:
 		push_warning("BuildNavigation: falta un NavigationRegion3D.")
@@ -82,6 +98,10 @@ func _ready() -> void:
 	if bake_on_ready and build_controller != null \
 			and (build_controller.get_floor_count() > 0 or include_scene_geometry):
 		call_deferred("request_bake")
+
+
+func _exit_tree() -> void:
+	_instances.erase(self)
 
 
 # --------------------------------------------------------------------------
@@ -129,7 +149,11 @@ func bake_now() -> void:
 
 
 func is_baking() -> bool:
-	return _baking or (navigation_region != null and navigation_region.is_baking())
+	if _baking:
+		return true
+	return navigation_region != null \
+		and is_instance_valid(navigation_region) \
+		and navigation_region.is_baking()
 
 
 ## Cantidad de poligonos del NavMesh actual (util para tests y debug).
