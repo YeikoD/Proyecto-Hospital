@@ -40,10 +40,22 @@ func _run() -> void:
 	route.affordance = &"work"
 	route.smart_object_chance = 1.0
 	route.smart_object_radius = 50.0
+	# Esta prueba aísla el desvío a `work`; el consultorio tiene sus pruebas.
+	route.consult_chance = 0.0
 	route.set_process(false)
 	npc.add_child(route)
+
+	# Un NPC normal no puede desviarse a la silla del operador.
+	var normal_started := route._try_start_smart_object()
+	_check(not normal_started,
+		"un NPC normal no elige 'work' en la ruta")
+	_check(route.get_state() == NpcRouteFSM.State.TRAVEL,
+		"el NPC normal sigue la ruta sin ocupar el escritorio")
+
+	# El medico si puede: la silla del operador es exclusiva de su grupo.
+	npc.add_to_group(&"doctor_npcs")
 	var started := route._try_start_smart_object()
-	_check(started, "la ruta detecta el escritorio de trabajo")
+	_check(started, "el medico detecta el escritorio de trabajo")
 	_check(route.get_state() == NpcRouteFSM.State.USE_SMART_OBJECT,
 		"la ruta entra en USE_SMART_OBJECT")
 	_check(route._chosen_affordance == &"work",

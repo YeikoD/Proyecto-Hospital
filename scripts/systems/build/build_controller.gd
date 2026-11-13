@@ -146,6 +146,11 @@ var _walls: Dictionary = {}
 ## Celda primaria -> pieza. Para objetos de varias celdas, `_object_cells`
 ## guarda todas las celdas cubiertas (y sirve para colisiones de huella).
 var _objects: Dictionary = {}
+## Todas las piezas de objeto, incluidas las que comparten celda ancla con otra
+## pieza (por ejemplo la silla acoplada al escritorio). `_objects` es solo un
+## indice por celda y puede quedarse con una sola; esta lista es la fuente de
+## verdad para guardar y para buscar recetas.
+var _object_pieces: Array[BuildPiece] = []
 var _object_cells: Dictionary = {}
 
 ## Recetas de objetos especiales cargadas de `special_objects_dir`.
@@ -232,6 +237,12 @@ var _hover_wall := Vector3i.ZERO
 ## Desplazamiento fino (sub-grilla) del objeto bajo el cursor, relativo al
 ## centro de su huella. Se calcula al mover el mouse con la herramienta OBJECT.
 var _hover_sub_offset := Vector3.ZERO
+## Celda ancla resuelta para el fantasma. Puede no coincidir con `_hover_cell`
+## cuando la pieza se acopla a una base y el sistema corre su ancla.
+var _hover_anchor_cell := Vector2i.ZERO
+## Rotacion resuelta para el fantasma (-1 = usar `_object_rotation`). Al acoplar
+## una silla el sistema la gira sola para que mire a la base.
+var _hover_rotation := -1
 var _hovering := false
 var _painting := false
 var _floor_dragging := false
@@ -439,9 +450,12 @@ func _input(event: InputEvent) -> void:
 func _is_save_key(key_event: InputEventKey) -> bool:
 	if not key_event.pressed or key_event.echo:
 		return false
-	if key_event.ctrl_pressed and not key_event.alt_pressed and key_event.keycode == KEY_S:
+	if key_event.ctrl_pressed and not key_event.alt_pressed \
+			and (key_event.keycode == KEY_S
+				or key_event.physical_keycode == KEY_S):
 		return true
-	if key_event.is_action_pressed("build_save"):
+	if InputMap.has_action("build_save") \
+			and key_event.is_action_pressed("build_save"):
 		return true
 	var u := key_event.unicode
 	if u == 176 or u == 186 or u == 170:
@@ -612,7 +626,11 @@ func get_wall_count() -> int:
 
 
 func get_object_count() -> int:
-	return _objects.size()
+	var total := 0
+	for piece in _object_pieces:
+		if piece != null and is_instance_valid(piece):
+			total += 1
+	return total
 
 
 ## Objeto colocado cuya huella cubre `cell` (o null).
@@ -625,9 +643,9 @@ func get_object_at(cell: Vector2i) -> BuildPiece:
 
 func get_objects() -> Array[BuildPiece]:
 	var out: Array[BuildPiece] = []
-	for piece in _objects.values():
-		if is_instance_valid(piece):
-			out.append(piece as BuildPiece)
+	for piece in _object_pieces:
+		if piece != null and is_instance_valid(piece):
+			out.append(piece)
 	return out
 
 
@@ -684,7 +702,7 @@ func rotate_object() -> void:
 
 func clear_all() -> void:
 	var had_pieces := not _floors.is_empty() or not _walls.is_empty() \
-		or not _objects.is_empty()
+		or not _object_pieces.is_empty()
 	var had_zones := not _zone_cells.is_empty()
 	_clear_corner_pieces()
 	_wall_corner_path.clear()
@@ -700,12 +718,14 @@ func clear_all() -> void:
 		piece.queue_free()
 	for piece: Node in _walls.values():
 		piece.queue_free()
-	for piece: Node in _objects.values():
-		piece.queue_free()
+	for piece: Node in _object_pieces:
+		if is_instance_valid(piece):
+			piece.queue_free()
 	_floors.clear()
 	_floor_tops.clear()
 	_walls.clear()
 	_objects.clear()
+	_object_pieces.clear()
 	_object_cells.clear()
 	_zone_cells.clear()
 	_zone_types.clear()
@@ -831,14 +851,13 @@ func _object_cells_for(
 	return cells
 
 
-## Si la celda ancla de una pieza acoplada cae dentro de la base (por ejemplo,
-## una silla medio metro bajo el escritorio), corre el ancla a una celda libre
-## y compensa el sub-offset. Asi el fantasma no se vuelve rojo solo por el snap
-## de medio metro.
+## Resuelve la celda ancla y el sub-offset definitivos de una pieza antes de
+## colocarla. Devuelve `[cell, sub_offset, rotation_steps]`.
 ##
-## Si el cursor apunta al centro de la celda de la base (sub-offset cero) se
-## prueban las cuatro celdas vecinas: la silla se puede meter hasta quedar
-## medio debajo del escritorio, conservando el ancla fuera de la base.
+## Si la pieza es el operador de una receta y el cursor esta sobre la base o de
+## su lado, se acopla al unico punto valido: el centro del lado largo, apoyado
+## contra el borde frontal. Nunca se permite que la silla quede centrada dentro
+## de la base. Si no hay acople, se mantiene el snap normal.
 func _resolve_part_anchor(
 	cell: Vector2i,
 	item: BuildItem,
@@ -846,13 +865,37 @@ func _resolve_part_anchor(
 	sub_offset: Vector3
 ) -> Array:
 	if item == null:
-		return [cell, sub_offset]
+		return [cell, sub_offset, rotation_steps]
+
+	var dock_base := _dock_base_for(cell, item)
+	if dock_base != null:
+		var dock_def := _special_def_for_pair(item.id, dock_base.item_id)
+		if dock_def != null:
+			var dock := _part_dock_target(dock_def, dock_base, item, cell)
+			if not dock.is_empty():
+				return [dock["cell"], dock["offset"], dock["rotation"]]
+
+	# Aunque no corresponda moverla (por ejemplo, el cursor esta un poco mas
+	# lejos del borde), una silla de escritorio cerca de su base se gira igual
+	# para mirar al escritorio. Asi el acople se ve aunque el snap de posicion
+	# no se active.
+	var face_base := _dock_base_for(cell, item, 2, true)
+	if face_base != null:
+		var face_center := _piece_rect(face_base).get_center()
+		var cursor_center := grid.cell_center(cell)
+		var to_base := _snap_axis(Vector3(
+			face_center.x - cursor_center.x, 0.0,
+			face_center.y - cursor_center.z
+		))
+		if to_base != Vector2.ZERO:
+			return [cell, sub_offset, _rotation_facing_direction(to_base)]
+
 	var owner := _object_cells.get(cell) as BuildPiece
 	if owner == null:
-		return [cell, sub_offset]
+		return [cell, sub_offset, rotation_steps]
 	var def := _special_def_for_piece(item, owner)
 	if def == null or item.id == def.base_item_id:
-		return [cell, sub_offset]
+		return [cell, sub_offset, rotation_steps]
 	for axis in _anchor_move_axes(owner, item, cell, rotation_steps, sub_offset):
 		var moved := cell + axis
 		if not grid.is_cell_inside(moved):
@@ -861,8 +904,221 @@ func _resolve_part_anchor(
 			float(axis.x), 0.0, float(axis.y)
 		) * grid.cell_size
 		if _can_place_object_at(moved, item, rotation_steps, moved_offset):
-			return [moved, moved_offset]
-	return [cell, sub_offset]
+			return [moved, moved_offset, rotation_steps]
+	return [cell, sub_offset, rotation_steps]
+
+
+## Base cercana a la celda del cursor a la que esta pieza podria acoplarse como
+## operador. Solo cuenta si el cursor esta sobre la base o del lado del
+## operador; asi una silla de escritorio usada como pieza client del otro lado
+## no se corre sola.
+##
+## `max_distance` y `ignore_side` permiten buscar la base solo para orientar la
+## silla hacia el escritorio sin moverla.
+func _dock_base_for(
+	cell: Vector2i,
+	item: BuildItem,
+	max_distance: int = 1,
+	ignore_side: bool = false
+) -> BuildPiece:
+	if item == null:
+		return null
+	var best: BuildPiece = null
+	var best_distance := 9999
+	for candidate in _unique_object_pieces():
+		var base := candidate
+		var special := _special_by_piece.get(candidate) as SpecialObject
+		if special != null:
+			base = _special_base_piece(special)
+			if base == null:
+				continue
+		var def := _special_def_for_pair(item.id, base.item_id)
+		if def == null or item.id != def.part_item_id:
+			continue
+		var base_cells := _piece_cells(base)
+		if base_cells.is_empty():
+			continue
+		var cursor_cells: Array[Vector2i] = [cell]
+		var distance := _min_cell_distance(base_cells, cursor_cells)
+		if distance > max_distance:
+			continue
+		var side := _resolved_operator_side(def, base)
+		if not ignore_side and side != Vector2.ZERO and not base_cells.has(cell):
+			var base_rect := _piece_rect(base)
+			var cursor_center := grid.cell_center(cell)
+			var to_cursor := Vector2(
+				cursor_center.x - (base_rect.position.x + base_rect.size.x * 0.5),
+				cursor_center.z - (base_rect.position.y + base_rect.size.y * 0.5)
+			)
+			if to_cursor.dot(side) < -0.001:
+				continue
+		if distance < best_distance:
+			best = base
+			best_distance = distance
+	return best
+
+
+## Posicion de acople de la pieza sobre la base: centrada en el lado largo y
+## apoyada contra el borde del lado del operador. Devuelve un diccionario con
+## `cell`, `offset` y `rotation`; vacio si no corresponde.
+func _part_dock_target(
+	def: SpecialObjectDef,
+	base: BuildPiece,
+	item: BuildItem,
+	cursor_cell: Vector2i
+) -> Dictionary:
+	if def == null or base == null or item == null:
+		return {}
+	if not def.part_dock_center or item.id != def.part_item_id:
+		return {}
+	var side := _resolved_operator_side(def, base)
+	if side == Vector2.ZERO:
+		return {}
+	var base_rect := _piece_rect(base)
+	if base_rect.size == Vector2.ZERO or grid == null:
+		return {}
+
+	var rotation := _rotation_facing_side(side)
+	var footprint := _object_footprint(item, rotation)
+	var half_x := float(footprint.x) * grid.cell_size * 0.5
+	var half_z := float(footprint.y) * grid.cell_size * 0.5
+	var depth := maxf(def.part_dock_depth, 0.0)
+	var center := base_rect.get_center()
+	if not is_zero_approx(side.x):
+		var edge := base_rect.end.x if side.x > 0.0 else base_rect.position.x
+		center.x = edge + signf(side.x) * (half_x - depth)
+	else:
+		var edge := base_rect.end.y if side.y > 0.0 else base_rect.position.y
+		center.y = edge + signf(side.y) * (half_z - depth)
+
+	return _dock_anchor_for_center(
+		center, item, rotation, base, cursor_cell)
+
+
+## Busca la celda ancla libre que, con un sub-offset de media celda como maximo,
+## deja la pieza con su centro en `center`. Prefiere la celda valida mas cercana
+## al cursor y conserva un fallback para que el fantasma muestre el acople en
+## rojo si esta bloqueado.
+func _dock_anchor_for_center(
+	center: Vector2,
+	item: BuildItem,
+	rotation_steps: int,
+	base: BuildPiece,
+	cursor_cell: Vector2i
+) -> Dictionary:
+	if grid == null:
+		return {}
+	var base_cells := _piece_cells(base)
+	var half := grid.cell_size * 0.5 + 0.001
+	# La grilla puede estar desplazada respecto del origen del mundo (map1 la
+	# tiene en z = -25). Descontar su origen antes de pasar a celdas.
+	var origin := grid.global_position
+	var start := Vector2i(
+		floori((center.x - origin.x) / grid.cell_size) - 1,
+		floori((center.y - origin.z) / grid.cell_size) - 1
+	)
+	var best: Dictionary = {}
+	var best_score := INF
+	var fallback: Dictionary = {}
+	var fallback_score := INF
+	for x in range(start.x, start.x + 3):
+		for z in range(start.y, start.y + 3):
+			var candidate := Vector2i(x, z)
+			if not grid.is_cell_inside(candidate) or base_cells.has(candidate):
+				continue
+			var cell_center := grid.cell_center(candidate)
+			var offset := Vector3(
+				center.x - cell_center.x, 0.0, center.y - cell_center.z)
+			if absf(offset.x) > half or absf(offset.z) > half:
+				continue
+			var score := float(
+				absi(candidate.x - cursor_cell.x)
+				+ absi(candidate.y - cursor_cell.y))
+			var entry := {
+				"cell": candidate,
+				"offset": offset,
+				"rotation": rotation_steps,
+			}
+			if _can_place_object_at(
+					candidate, item, rotation_steps, offset):
+				if score < best_score:
+					best = entry
+					best_score = score
+			elif _is_free_anchor_cell(candidate) and score < fallback_score:
+				fallback = entry
+				fallback_score = score
+	if not best.is_empty():
+		return best
+	return fallback
+
+
+## Una celda puede ser ancla si ninguna pieza la tiene como ancla todavia.
+func _is_free_anchor_cell(cell: Vector2i) -> bool:
+	if not _object_cells.has(cell):
+		return true
+	var owner := _object_cells[cell] as BuildPiece
+	return owner == null or owner.cell != cell
+
+
+## Rotacion de 90 grados que hace mirar el frente de la pieza (-Z local) hacia
+## el lado opuesto de `side`, es decir, hacia la base.
+func _rotation_facing_side(side: Vector2) -> int:
+	return _rotation_facing_direction(-side)
+
+
+## Rotacion de 90 grados que hace mirar el frente de la pieza (-Z local) hacia
+## `direction`.
+func _rotation_facing_direction(direction: Vector2) -> int:
+	var target := Vector3(direction.x, 0.0, direction.y)
+	if target.length() < 0.001:
+		return 0
+	target = target.normalized()
+	var best_step := 0
+	var best_dot := -2.0
+	for step in 4:
+		var forward := Basis(Vector3.UP, float(step) * PI * 0.5) * Vector3.FORWARD
+		var dot := forward.dot(target)
+		if dot > best_dot:
+			best_dot = dot
+			best_step = step
+	return best_step
+
+
+## Comprueba que la pieza este centrada en el lado largo de la base y apoyada
+## contra su borde del lado del operador. `depth` permite un pequeño solape
+## configurable (`part_dock_depth`), nunca suficiente para atravesar la base.
+func _part_dock_geometry_matches(
+	def: SpecialObjectDef,
+	base_rect: Rect2,
+	part_rect: Rect2,
+	side: Vector2
+) -> bool:
+	if side == Vector2.ZERO:
+		return true
+	var eps := 0.001
+	var gap := maxf(def.max_gap, 0.0)
+	var depth := maxf(def.part_dock_depth, 0.0)
+	var base_center := base_rect.get_center()
+	var part_center := part_rect.get_center()
+	if not is_zero_approx(side.x):
+		if absf(part_center.y - base_center.y) > eps:
+			return false
+		if side.x > 0.0:
+			var inner := part_rect.position.x
+			var edge := base_rect.end.x - depth
+			return inner >= edge - eps and inner <= edge + gap
+		var inner_right := part_rect.end.x
+		var edge_left := base_rect.position.x + depth
+		return inner_right <= edge_left + eps and inner_right >= edge_left - gap
+	if absf(part_center.x - base_center.x) > eps:
+		return false
+	if side.y > 0.0:
+		var inner := part_rect.position.y
+		var edge := base_rect.end.y - depth
+		return inner >= edge - eps and inner <= edge + gap
+	var inner_bottom := part_rect.end.y
+	var edge_top := base_rect.position.y + depth
+	return inner_bottom <= edge_top + eps and inner_bottom >= edge_top - gap
 
 
 ## Orden en que se prueban las celdas vecinas para sacar el ancla de la base.
@@ -967,7 +1223,7 @@ func _can_place_object(
 ) -> bool:
 	var resolved := _resolve_part_anchor(cell, item, rotation_steps, sub_offset)
 	return _can_place_object_at(
-		resolved[0], item, rotation_steps, resolved[1])
+		resolved[0], item, int(resolved[2]), resolved[1])
 
 
 func _can_place_object_at(
@@ -1020,10 +1276,9 @@ func _can_place_object_at(
 					def, other_special, def_other, item, cell,
 					rotation_steps, sub_offset):
 				return false
-			# Solo se comparten celdas con la base o con el operador. Dos
-			# clientes no se pisan entre si.
-			if other != def_other \
-					and other != _special_part_piece(other_special):
+			# Solo se comparten celdas con la base. Dos piezas acopladas
+			# (operador, clientes) no se pisan entre si.
+			if other != def_other:
 				return false
 		else:
 			def = _special_def_for_pair(item.id, other.item_id)
@@ -1102,10 +1357,27 @@ func _special_placement_matches(
 
 	if base_rect.size == Vector2.ZERO or part_rect.size == Vector2.ZERO:
 		return false
+	# La pieza acoplada nunca puede quedar centrada dentro de la base: se veria
+	# atravesandola. Como maximo puede quedar medio metro metida desde un borde,
+	# con el centro justo sobre el borde de la huella.
+	if base_rect.grow(-0.01).has_point(part_rect.get_center()):
+		return false
 	if not base_rect.grow(maxf(def.max_gap, 0.0)).intersects(part_rect):
 		return false
 	if not _cells_adjacent_or_shared(base_cells, part_cells):
 		return false
+	if not placing_base and def.part_dock_center \
+			and item.id == def.part_item_id:
+		var side := _resolved_operator_side(def, other)
+		if side != Vector2.ZERO:
+			var base_center := base_rect.get_center()
+			var part_center := part_rect.get_center()
+			var to_part := Vector2(
+				part_center.x - base_center.x, part_center.y - base_center.y)
+			if to_part.dot(side) > 0.0 \
+					and not _part_dock_geometry_matches(
+						def, base_rect, part_rect, side):
+				return false
 	if check_facing and def.require_facing:
 		var yaw := float(part_rotation) * PI * 0.5
 		var forward := Basis(Vector3.UP, yaw) * Vector3.FORWARD
@@ -1156,10 +1428,10 @@ func _place_object(
 	rotation_steps: int,
 	sub_offset: Vector3 = Vector3.ZERO
 ) -> bool:
-	var steps := wrapi(rotation_steps, 0, 4)
-	var resolved := _resolve_part_anchor(cell, item, steps, sub_offset)
+	var resolved := _resolve_part_anchor(cell, item, rotation_steps, sub_offset)
 	cell = resolved[0]
 	sub_offset = resolved[1]
+	var steps := wrapi(int(resolved[2]), 0, 4)
 	if not _can_place_object_at(cell, item, steps, sub_offset):
 		return false
 
@@ -1187,6 +1459,8 @@ func _place_object(
 
 	_claim_object_cells(piece, item, cell, steps, sub_offset)
 	_objects[cell] = piece
+	if not _object_pieces.has(piece):
+		_object_pieces.append(piece)
 
 	# Una pieza recien colocada puede cerrar una receta de objeto especial.
 	_try_form_special_object(piece)
@@ -1241,7 +1515,7 @@ func _try_form_special_object(placed: BuildPiece) -> SpecialObject:
 
 		# Si ya existe un conjunto y se coloca otra pieza client valida, se
 		# rehace el conjunto con todas las piezas client.
-		if def.requires_client() and def.is_client_item(placed.item_id):
+		if def.has_clients() and def.is_client_item(placed.item_id):
 			var upgraded := _try_upgrade_special_clients(def, placed)
 			if upgraded != null:
 				return upgraded
@@ -1312,11 +1586,9 @@ func _try_form_from_client(
 func _finish_special_candidate(
 	def: SpecialObjectDef, base: BuildPiece, part: BuildPiece
 ) -> SpecialObject:
-	var clients: Array[BuildPiece] = []
-	if def.requires_client():
-		clients = _find_special_clients(def, base, part)
-		if clients.size() < def.client_min_count:
-			return null
+	var clients := _find_special_clients(def, base, part)
+	if clients.size() < def.client_min_count:
+		return null
 	if not _prepare_special_pair(def, base, part):
 		return null
 	return _form_special_object(def, base, part, clients)
@@ -1328,7 +1600,7 @@ func _find_special_clients(
 	def: SpecialObjectDef, base: BuildPiece, part: BuildPiece
 ) -> Array[BuildPiece]:
 	var out: Array[BuildPiece] = []
-	if def == null or not def.requires_client() or base == null or part == null:
+	if def == null or not def.has_clients() or base == null or part == null:
 		return out
 
 	var direction := _part_anchor_direction(base, part)
@@ -1482,12 +1754,9 @@ func _operator_side_world(def: SpecialObjectDef, base: BuildPiece) -> Vector2:
 	return _operator_side_for_rotation(def, base.object_rotation_steps)
 
 
-## Lado del operador para una base concreta. Si hay una pieza client que no
-## puede ser operador (por ejemplo, la banca de pacientes) acoplada a la base,
-## el operador va del lado opuesto a esa banca. Asi la receta funciona con el
-## escritorio girado y no depende de un lado fijo. Si no hay banca se usa el
-## lado configurado en la receta (`operator_side`).
-func _resolved_operator_side(def: SpecialObjectDef, base: BuildPiece) -> Vector2:
+## Lado donde esta la banca de pacientes (si hay una sola, sin ambiguedad).
+## `Vector2.ZERO` si no hay banca o hay bancas en lados distintos.
+func _bench_side_for(def: SpecialObjectDef, base: BuildPiece) -> Vector2:
 	if def == null or base == null:
 		return Vector2.ZERO
 	var base_cells := _piece_cells(base)
@@ -1516,14 +1785,28 @@ func _resolved_operator_side(def: SpecialObjectDef, base: BuildPiece) -> Vector2
 		elif not ambiguous and direction != bench_side:
 			ambiguous = true
 	if bench_found and not ambiguous:
-		return -bench_side
+		return bench_side
+	return Vector2.ZERO
+
+
+## Lado del operador para una base concreta. Si hay una banca de pacientes
+## acoplada a la base, el operador va del lado opuesto. Si no hay banca, se usa
+## el lado configurado solo como pista de colocacion; cualquier silla adyacente
+## puede ser el operador.
+func _resolved_operator_side(def: SpecialObjectDef, base: BuildPiece) -> Vector2:
+	var bench := _bench_side_for(def, base)
+	if bench != Vector2.ZERO:
+		return -bench
 	return _operator_side_world(def, base)
 
 
 ## La pieza acoplada debe estar del lado del operador resuelto para esa base.
+## Sin banca de pacientes, cualquier lado adyacente sirve como operador.
 func _part_on_operator_side(
 	def: SpecialObjectDef, base: BuildPiece, part: BuildPiece
 ) -> bool:
+	if _bench_side_for(def, base) == Vector2.ZERO:
+		return true
 	var side := _resolved_operator_side(def, base)
 	if side == Vector2.ZERO:
 		return true
@@ -1559,6 +1842,72 @@ func _lateral_overlaps(
 		and client_max >= base_min - tolerance
 
 
+## Corre una pieza ya colocada al punto de acople de la base cuando la base se
+## coloca despues que ella. Solo mueve piezas que ya estan del lado del
+## operador: una silla usada como client del otro lado no se toca.
+func _try_dock_existing_part(
+	def: SpecialObjectDef, base: BuildPiece, part: BuildPiece
+) -> bool:
+	if def == null or base == null or part == null:
+		return false
+	if not def.part_dock_center or part.item_id != def.part_item_id:
+		return false
+	var side := _resolved_operator_side(def, base)
+	if side == Vector2.ZERO:
+		return false
+	var base_rect := _piece_rect(base)
+	var part_rect := _piece_rect(part)
+	if base_rect.size == Vector2.ZERO or part_rect.size == Vector2.ZERO:
+		return false
+	var to_part := part_rect.get_center() - base_rect.get_center()
+	if to_part.dot(side) < -0.25:
+		return false
+	var item := _find_item_by_id(part.item_id)
+	if item == null:
+		return false
+	var dock := _part_dock_target(def, base, item, part.cell)
+	if dock.is_empty():
+		return false
+	var new_cell: Vector2i = dock["cell"]
+	var new_offset: Vector3 = dock["offset"]
+	var new_rotation: int = dock["rotation"]
+	if new_cell == part.cell \
+			and new_offset.is_equal_approx(part.sub_offset) \
+			and new_rotation == part.object_rotation_steps:
+		return true
+
+	var old_cell := part.cell
+	var old_offset := part.sub_offset
+	var old_rotation := part.object_rotation_steps
+	_release_object_cells(part)
+	if not _can_place_object_at(new_cell, item, new_rotation, new_offset):
+		_claim_object_cells(part, item, old_cell, old_rotation, old_offset)
+		_objects[old_cell] = part
+		return false
+
+	part.cell = new_cell
+	part.sub_offset = new_offset
+	part.object_rotation_steps = new_rotation
+	part.global_position = grid.cell_center(new_cell) \
+		+ _object_footprint_offset(_object_footprint(item, new_rotation)) \
+		+ new_offset + Vector3.UP * object_height_offset
+	part.global_rotation = Vector3(0.0, float(new_rotation) * PI * 0.5, 0.0)
+	_claim_object_cells(part, item, new_cell, new_rotation, new_offset)
+	_objects[new_cell] = part
+	return true
+
+
+## Libera la ocupacion de una pieza antes de recalcular su celda.
+func _release_object_cells(piece: BuildPiece) -> void:
+	if piece == null:
+		return
+	for key in _object_cells.keys():
+		if _object_cells[key] == piece:
+			_object_cells.erase(key)
+	if _objects.get(piece.cell) == piece:
+		_objects.erase(piece.cell)
+
+
 func _find_special_part(
 	base: BuildPiece, def: SpecialObjectDef, exclude: BuildPiece = null
 ) -> BuildPiece:
@@ -1572,7 +1921,9 @@ func _find_special_part(
 		if _special_by_piece.has(candidate):
 			continue
 		if not _special_pair_geometry_matches(def, base, candidate):
-			continue
+			if not _try_dock_existing_part(def, base, candidate) \
+					or not _special_pair_geometry_matches(def, base, candidate):
+				continue
 		if not _part_on_operator_side(def, base, candidate):
 			continue
 		var distance := base.global_position.distance_squared_to(candidate.global_position)
@@ -1590,8 +1941,12 @@ func _find_special_base(part: BuildPiece, def: SpecialObjectDef) -> BuildPiece:
 			continue
 		if _special_by_piece.has(candidate):
 			continue
+		# Al soltar la silla cerca del escritorio, se auto-acopla: no hace falta
+		# que el jugador la deje centrada al milímetro para que forme el objeto.
 		if not _special_pair_geometry_matches(def, candidate, part):
-			continue
+			if not _try_dock_existing_part(def, candidate, part) \
+					or not _special_pair_geometry_matches(def, candidate, part):
+				continue
 		if not _part_on_operator_side(def, candidate, part):
 			continue
 		var distance := part.global_position.distance_squared_to(candidate.global_position)
@@ -1621,6 +1976,11 @@ func _prepare_special_pair(
 ) -> bool:
 	if def == null or base == null or part == null:
 		return false
+	# Si el lado del operador cambio (por ejemplo al agregar la banca), la
+	# silla se vuelve a acoplar centrada antes de validar.
+	if part.item_id == def.part_item_id \
+			and not _special_pair_geometry_matches(def, base, part):
+		_try_dock_existing_part(def, base, part)
 	if not def.require_facing:
 		return _special_pair_geometry_matches(def, base, part)
 	if def.snap_part_rotation:
@@ -1633,19 +1993,34 @@ func _prepare_special_pair(
 func _special_pair_geometry_matches(
 	def: SpecialObjectDef, base: BuildPiece, part: BuildPiece
 ) -> bool:
-	return _pieces_adjacent(base, part) \
-		and _pieces_touch(base, part, def.max_gap)
+	if not _pieces_adjacent(base, part) \
+			or not _pieces_touch(base, part, def.max_gap):
+		return false
+	var base_rect := _piece_rect(base)
+	var part_rect := _piece_rect(part)
+	if base_rect.size == Vector2.ZERO or part_rect.size == Vector2.ZERO:
+		return false
+	if base_rect.grow(-0.01).has_point(part_rect.get_center()):
+		return false
+	if def.part_dock_center and part.item_id == def.part_item_id:
+		var side := _resolved_operator_side(def, base)
+		if side != Vector2.ZERO:
+			var to_part := part_rect.get_center() - base_rect.get_center()
+			if to_part.dot(side) > 0.0 \
+					and not _part_dock_geometry_matches(
+						def, base_rect, part_rect, side):
+				return false
+	return true
 
 
 func _unique_object_pieces() -> Array[BuildPiece]:
 	var out: Array[BuildPiece] = []
 	var seen := {}
-	for piece in _objects.values():
+	for piece in _object_pieces:
 		if piece == null or not is_instance_valid(piece) or seen.has(piece):
 			continue
 		seen[piece] = true
-		if piece is BuildPiece:
-			out.append(piece as BuildPiece)
+		out.append(piece)
 	return out
 
 
@@ -2498,13 +2873,97 @@ func _finish_zone_drag() -> void:
 func _paint_zone_cells(cells: Array[Vector2i]) -> void:
 	if cells.is_empty():
 		return
+	paint_zone(cells)
+
+
+# --------------------------------------------------------------------------
+# API de zonas para la IA y las pruebas
+# --------------------------------------------------------------------------
+
+## Zona a la que pertenece una celda (o `&""` si no hay zona).
+func get_zone_id_at_cell(cell: Vector2i) -> StringName:
+	return _zone_cells.get(cell, &"")
+
+
+## Zona a la que pertenece un punto del mundo (o `&""`).
+func get_zone_id_at_world(world: Vector3) -> StringName:
+	if grid == null:
+		return &""
+	return get_zone_id_at_cell(grid.cell_from_world(world))
+
+
+## Tipo asignado a una zona (`unassigned`, `hallway`, `waiting`, `consult`).
+func get_zone_type_of(zone_id: StringName) -> StringName:
+	if zone_id == &"" or not _zone_types.has(zone_id):
+		return &""
+	return _zone_types[zone_id]
+
+
+func get_zone_type_at_world(world: Vector3) -> StringName:
+	return get_zone_type_of(get_zone_id_at_world(world))
+
+
+## IDs de todas las zonas pintadas de un tipo concreto.
+func get_zone_ids_of_type(type_id: StringName) -> Array[StringName]:
+	var out: Array[StringName] = []
+	for zone_id in _zone_types.keys():
+		if _zone_types[zone_id] == type_id:
+			out.append(zone_id)
+	return out
+
+
+## Celdas que pertenecen a una zona.
+func get_zone_cells(zone_id: StringName) -> Array[Vector2i]:
+	var out: Array[Vector2i] = []
+	if zone_id == &"":
+		return out
+	for cell in _zone_cells.keys():
+		if _zone_cells[cell] == zone_id:
+			out.append(cell)
+	return out
+
+
+func is_world_in_zone(world: Vector3, zone_id: StringName) -> bool:
+	return zone_id != &"" and get_zone_id_at_world(world) == zone_id
+
+
+## Pinta una zona nueva con un tipo concreto y devuelve su id. Pensado para la
+## UI y para las pruebas; el pincel llama a esta funcion.
+func paint_zone(
+	cells: Array[Vector2i], type_id: StringName = ZONE_DEFAULT_TYPE
+) -> StringName:
+	if cells.is_empty():
+		return &""
+	if not ZONE_TYPES.has(type_id):
+		type_id = ZONE_DEFAULT_TYPE
 	var zone_id := _new_zone_id()
 	for cell in cells:
 		_zone_cells[cell] = zone_id
-	_zone_types[zone_id] = ZONE_DEFAULT_TYPE
+	_zone_types[zone_id] = type_id
 	_cleanup_zone_types()
 	_rebuild_zones_overlay()
 	zones_changed.emit()
+	return zone_id
+
+
+## Cambia el tipo de una zona ya pintada.
+func set_zone_type(zone_id: StringName, type_id: StringName) -> bool:
+	if zone_id == &"" or not _zone_types.has(zone_id):
+		return false
+	if not ZONE_TYPES.has(type_id):
+		return false
+	if _zone_types[zone_id] == type_id:
+		return true
+	_zone_types[zone_id] = type_id
+	_rebuild_zones_overlay()
+	zones_changed.emit()
+	return true
+
+
+## Nombre legible de un tipo de zona.
+func get_zone_type_name(type_id: StringName) -> String:
+	return _zone_type_name(type_id)
+
 
 
 func _erase_zone_cells(cells: Array[Vector2i]) -> void:
@@ -2758,9 +3217,8 @@ func _open_zone_menu(zone_id: StringName) -> void:
 func _assign_zone_type(type_id: StringName) -> void:
 	if _zone_menu_zone_id == &"":
 		return
-	_zone_types[_zone_menu_zone_id] = type_id
-	_rebuild_zones_overlay()
-	zones_changed.emit()
+	if not set_zone_type(_zone_menu_zone_id, type_id):
+		return
 	_show_build_message(
 		"Zona asignada: %s" % _zone_type_name(type_id),
 		Color(0.75, 0.9, 1.0)
@@ -2859,10 +3317,13 @@ func _erase_object_at(cell: Vector2i, order: int = 0) -> void:
 	# Si la pieza forma parte de un objeto especial, primero se separa el
 	# conjunto. La politica de borrado la decide la receta.
 	var composite := _special_by_piece.get(piece) as SpecialObject
+	var reform_base: BuildPiece = null
 	if composite != null:
 		var def := composite.special_def
+		var parts := composite.get_parts()
+		if not parts.is_empty():
+			reform_base = parts[0]
 		if def != null and def.remove_together:
-			var parts := composite.get_parts()
 			_dissolve_special_object(composite, false)
 			var index := 0
 			for part in parts:
@@ -2872,6 +3333,11 @@ func _erase_object_at(cell: Vector2i, order: int = 0) -> void:
 		_dissolve_special_object(composite, true)
 
 	_erase_object_piece(piece, order)
+	# Si todavia quedan las piezas necesarias (por ejemplo al borrar solo la
+	# banca de pacientes), el conjunto se vuelve a formar sin la pieza borrada.
+	if reform_base != null and reform_base != piece \
+			and is_instance_valid(reform_base) and not reform_base.is_queued_for_deletion():
+		_try_form_special_object(reform_base)
 
 
 ## Borra una pieza concreta (todas sus celdas) y lanza su animacion.
@@ -2886,6 +3352,7 @@ func _erase_object_piece(piece: BuildPiece, order: int = 0) -> void:
 	for c in _objects.keys():
 		if _objects[c] == piece:
 			_objects.erase(c)
+	_object_pieces.erase(piece)
 
 	if is_instance_valid(piece):
 		if piece is SmartObject:
@@ -2929,6 +3396,8 @@ func _load_build_items() -> void:
 		if selected_item == null and not build_items.is_empty():
 			selected_item = build_items[0]
 	_apply_selected_item()
+	if build_menu != null:
+		build_menu.set_selected(selected_item)
 
 
 func _wire_build_menu() -> void:
@@ -2983,6 +3452,8 @@ func _validate_special_object_defs() -> void:
 func _on_build_item_selected(item: BuildItem) -> void:
 	selected_item = item
 	_apply_selected_item()
+	if build_menu != null:
+		build_menu.set_selected(item)
 
 
 func _apply_selected_item() -> void:
@@ -3697,6 +4168,8 @@ func _update_hover() -> bool:
 	# Precision de medio metro para objetos: se ajusta el centro de la huella a
 	# la sub-grilla, limitado a un paso por eje. Si ese ajuste superpone el
 	# objeto con otra pieza, se usa el desplazamiento valido mas cercano.
+	_hover_anchor_cell = _hover_cell
+	_hover_rotation = -1
 	_hover_sub_offset = Vector3.ZERO
 	if tool == Tool.OBJECT and _selected_object_item != null \
 			and grid.subdivisions > 1:
@@ -3707,13 +4180,28 @@ func _update_hover() -> bool:
 ## Devuelve el desplazamiento fino valido mas cercano al cursor. Evita que el
 ## borde de una celda se vuelva rojo solo porque el snap de 0,5 m mete la
 ## huella en la celda vecina ocupada (por ejemplo, debajo de un escritorio).
+##
+## Tambien resuelve el acople a una base: deja el ancla y la rotacion en
+## `_hover_anchor_cell` y `_hover_rotation` para que el fantasma muestre la
+## silla ya girada y apoyada en el borde frontal del escritorio.
 func _valid_hover_offset(point: Vector3) -> Vector3:
 	var footprint := _object_footprint(_selected_object_item, _object_rotation)
 	var base := grid.cell_center(_hover_cell) \
 		+ _object_footprint_offset(footprint)
 	var wanted := grid.snap_offset(
 		Vector2(point.x - base.x, point.z - base.z), 1)
-	if _can_place_object(
+	var resolved := _resolve_part_anchor(
+		_hover_cell, _selected_object_item, _object_rotation, wanted)
+	var resolved_cell: Vector2i = resolved[0]
+	var resolved_offset: Vector3 = resolved[1]
+	var resolved_rotation: int = resolved[2]
+	_hover_anchor_cell = resolved_cell
+	_hover_rotation = resolved_rotation
+	if resolved_cell != _hover_cell \
+			or not resolved_offset.is_equal_approx(wanted) \
+			or resolved_rotation != _object_rotation:
+		return resolved_offset
+	if _can_place_object_at(
 			_hover_cell, _selected_object_item, _object_rotation, wanted):
 		return wanted
 
@@ -3733,8 +4221,9 @@ func _valid_hover_offset(point: Vector3) -> Vector3:
 	for candidate in candidates:
 		if candidate.is_equal_approx(wanted):
 			continue
-		if _can_place_object(
+		if _can_place_object_at(
 				_hover_cell, _selected_object_item, _object_rotation, candidate):
+			_hover_rotation = _object_rotation
 			return candidate
 	return wanted
 
@@ -3764,9 +4253,13 @@ func _update_ghosts() -> void:
 			_show_wall_ghost(grid.clamp_wall(_hover_wall),
 				_can_place_wall(_hover_wall), false)
 		Tool.OBJECT:
-			_show_object_ghost(grid.clamp_cell(_hover_cell),
-				_can_place_object(_hover_cell, _selected_object_item,
-					_object_rotation, _hover_sub_offset), false,
+			var place_cell := _hover_anchor_cell
+			var place_rotation := _object_rotation
+			if _hover_rotation >= 0:
+				place_rotation = _hover_rotation
+			_show_object_ghost(place_cell,
+				_can_place_object_at(place_cell, _selected_object_item,
+					place_rotation, _hover_sub_offset), false,
 				_hover_sub_offset)
 		Tool.ERASE:
 			match erase_kind:
@@ -3877,6 +4370,8 @@ func _show_object_ghost(
 			# El objeto puede ocupar varias celdas: usar su celda primaria.
 			cell = piece.cell
 	elif _selected_object_item != null:
+		if _hover_rotation >= 0:
+			steps = _hover_rotation
 		scene = _selected_object_item.scene
 		footprint = _object_footprint(_selected_object_item, steps)
 
@@ -4625,13 +5120,12 @@ func save_construction() -> void:
 			"axis": key.z,
 			"item_id": String(piece.item_id),
 		})
-	for cell in _objects.keys():
-		var piece: BuildPiece = _objects[cell]
-		if not is_instance_valid(piece):
+	for piece in _object_pieces:
+		if piece == null or not is_instance_valid(piece):
 			continue
 		data["objects"].append({
-			"x": cell.x,
-			"y": cell.y,
+			"x": piece.cell.x,
+			"y": piece.cell.y,
 			"item_id": String(piece.item_id),
 			"rotation": piece.object_rotation_steps,
 			"offset_x": piece.sub_offset.x,
@@ -4777,8 +5271,6 @@ func load_construction() -> void:
 		if typeof(entry) != TYPE_DICTIONARY:
 			continue
 		var cell := Vector2i(int(entry.get("x", 0)), int(entry.get("y", 0)))
-		if _objects.has(cell):
-			continue
 		var item := _find_item_by_id(StringName(String(entry.get("item_id", ""))))
 		if item == null:
 			continue

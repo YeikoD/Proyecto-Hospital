@@ -45,6 +45,9 @@ func _run() -> void:
 		work.duration = 1.0
 
 	var npc := demo.get_node("NPCs/NPC1") as NpcAgent
+	# `work` es exclusiva del medico; esta prueba simula uno para verificar la
+	# animacion y el uso del Escritorio de trabajo.
+	npc.add_to_group(&"doctor_npcs")
 	var brain := npc.get_node("NpcBrain") as NpcBrain
 	var anim_manager := npc.get_animation_manager()
 	_check(brain != null, "el NPC trae NpcBrain")

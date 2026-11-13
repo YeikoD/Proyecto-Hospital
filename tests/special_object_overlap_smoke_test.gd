@@ -1,7 +1,8 @@
 extends SceneTree
 
-## Prueba de objetos especiales con celdas compartidas: la silla de escritorio
-## puede quedar medio metro debajo del escritorio sin que la ocupacion lo impida.
+## Prueba de objetos especiales con celdas compartidas: el operador se acopla
+## centrado en el borde frontal del escritorio (nunca dentro de su huella) y las
+## piezas client pueden seguir compartiendo celdas medio metro.
 ## Ejecutar:
 ##   Godot --headless --path . --script res://tests/special_object_overlap_smoke_test.gd
 
@@ -32,30 +33,36 @@ func _run() -> void:
 	_build_floors(controller)
 	await process_frame
 
-	var chair_cell := Vector2i(5, 6)
+	var chair_cell := Vector2i(5, 4)
 	var desk_cell := Vector2i(5, 5)
-	var patient_cell := Vector2i(5, 4)
-	var overlap_offset := Vector3(0.0, 0.0, -0.5)
+	var patient_cell := Vector2i(5, 6)
+	var overlap_offset := Vector3(0.0, 0.0, 0.5)
+	# Acople esperado del operador: centrado en el lado largo (x = 6,0) y
+	# apoyado contra el borde frontal (z = 5,0). El ancla (5,4) compensa con
+	# medio metro en X.
+	var dock_offset := Vector3(0.5, 0.0, 0.0)
 
-	# --- Orden normal: escritorio primero, silla medio metida debajo ------
+	# --- Orden normal: escritorio primero, silla acoplada al frente ---------
 	_check(controller.place_object_item(desk, desk_cell, 0),
 		"coloca el escritorio")
 	controller._selected_object_item = chair
 	controller._object_rotation = 0
 	controller._hover_cell = chair_cell
-	var point := controller.grid.cell_center(chair_cell) + Vector3(0.0, 0.0, -0.49)
+	var point := controller.grid.cell_center(chair_cell) + Vector3(0.0, 0.0, 0.49)
 	var hover_offset := controller._valid_hover_offset(point)
-	_check(hover_offset.is_equal_approx(overlap_offset),
-		"el snap conserva el medio metro debajo del escritorio")
+	_check(hover_offset.is_equal_approx(dock_offset),
+		"el snap centra la silla en el borde frontal del escritorio")
+	_check(controller._hover_rotation == 2,
+		"el fantasma gira la silla para mirar al escritorio")
 	_check(controller._can_place_object(chair_cell, chair, 0, overlap_offset),
-		"la silla puede compartir la celda del escritorio")
+		"la silla se acopla al escritorio")
 	_check(controller._can_place_object(chair_cell, chair, 2, overlap_offset),
 		"la silla se puede colocar aunque todavia no mire al escritorio")
 	_check(controller.place_object_item(chair, chair_cell, 0, overlap_offset),
-		"la silla se coloca medio metro debajo del escritorio")
+		"la silla se coloca acoplada al borde frontal")
 	await process_frame
-	_check(controller.get_special_object_count() == 0,
-		"sin pacientes todavia no se forma el conjunto")
+	_check(controller.get_special_object_count() == 1,
+		"escritorio + operador ya forman el conjunto")
 	_check(controller.place_object_item(patients, patient_cell, 1),
 		"coloca las sillas de pacientes al otro lado")
 	await process_frame
@@ -116,7 +123,7 @@ func _run() -> void:
 	var patients_after := controller.get_object_at(patient_cell)
 	_check(chair_after != null and chair_after.item_id == chair.id,
 		"la silla conserva su celda ancla")
-	_check(chair_after != null and chair_after.object_rotation_steps == 0,
+	_check(chair_after != null and chair_after.object_rotation_steps == 2,
 		"la silla se auto-orienta hacia el escritorio")
 	_check(desk_after != null and desk_after.item_id == desk.id,
 		"el escritorio reclama la celda compartida")
@@ -124,8 +131,8 @@ func _run() -> void:
 		"las sillas de pacientes conservan su celda")
 
 	# --- Cursor sobre la celda del escritorio -----------------------------
-	# El snap deja la silla medio metro bajo el escritorio y la celda ancla cae
-	# dentro de la base: el sistema corre el ancla al lado libre sin moverla.
+	# El cursor apunta al centro de la base; el operador se acopla al borde
+	# frontal y su ancla se resuelve en la celda libre del lado de la silla.
 	var cursor_cell := Vector2i(7, 5)
 	var cursor_offset := Vector3(0.0, 0.0, 0.5)
 	_check(controller.place_object_item(desk, cursor_cell, 0),
@@ -134,9 +141,9 @@ func _run() -> void:
 		"la silla con el ancla bajo el escritorio se considera valida")
 	_check(controller.place_object_item(chair, cursor_cell, 0, cursor_offset),
 		"la silla se coloca partiendo de la celda del escritorio")
-	_check(controller.get_object_at(Vector2i(7, 6)) != null,
-		"el ancla se corre a la celda libre del lado de la silla")
-	_check(controller.place_object_item(patients, Vector2i(7, 4), 1),
+	_check(controller.get_object_at(Vector2i(7, 4)) != null,
+		"el ancla se resuelve en la celda libre del lado de la silla")
+	_check(controller.place_object_item(patients, Vector2i(7, 6), 1),
 		"coloca la banca del lado opuesto")
 	await process_frame
 	_check(controller.get_special_object_count() == 2,

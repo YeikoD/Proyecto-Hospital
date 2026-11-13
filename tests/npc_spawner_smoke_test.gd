@@ -125,6 +125,11 @@ func _run() -> void:
 	_check(second.spawn_now() == null, "el segundo spawner respeta el tope")
 
 	# --- Vuelta al spawner y desaparicion ---------------------------------
+	# Pausar la generacion automatica: si aparece otro NPC durante la vuelta, el
+	# contador global no baja aunque el primero desaparezca (carrera de prueba).
+	for s in spawners:
+		s.set_process(false)
+
 	# Alejar al NPC para que el regreso no sea instantaneo.
 	first.global_position = Vector3(7.5, 0.1, 5.5)
 

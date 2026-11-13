@@ -55,13 +55,88 @@ modo se agrega `NpcRouteFSM` en lugar de `NpcSpawnCycle`:
   `1`, `B→A` cuenta `2`. Con `0` camina indefinidamente.
 - Mientras camina, un selector puede desviarlo **una vez por tramo** a usar un
   SmartObject cercano (probabilidad `route_smart_object_chance`). Prueba las
-  affordances de `route_affordances` (por defecto silla y escritorio de trabajo)
-  y elige la de mejor puntuación.
+  affordances de `route_affordances` (por defecto solo `sit`) y elige la de
+  mejor puntuación. La affordance `work` de la silla del operador está
+  reservada al médico y los NPCs normales la ignoran.
 - El `NpcBrain` sigue siendo el que reserva el slot, camina y hace la
   interacción; `NpcRouteFSM` solo lo enciende cuando toca.
 - En modo ruta no se exige `require_objective`: el objetivo es el nodo destino.
 - Si querés tráfico en ambos sentidos, activá los dos spawners y apuntá cada uno
   al otro (como en `map1.tscn`).
+
+### NPC médico (invocación manual)
+
+`NpcDoctorSpawner` (`scripts/characters/npc/npc_doctor_spawner.tscn`) extiende el
+spawner pero **no** genera población por intervalo: espera la acción
+`summon_doctor` (tecla **Y**) y entonces crea un único médico.
+
+- Solo puede existir **un médico vivo**: se registra en el grupo `doctor_npcs`.
+  Pulsar Y de nuevo devuelve el existente, nunca lo duplica.
+- Su cerebro se fuerza a una sola necesidad `work` (`need_growth = 0`,
+  `need_affordances = {work: work}`, `need_threshold = 0`, `search_radius = 0`).
+  La affordance `work` solo la ofrece el objeto especial **Escritorio de
+  trabajo** (`work_desk`), así que no puede sentarse en sillas ni usar
+  escritorios sueltos.
+- El médico es **permanente**: no usa `NpcSpawnCycle`, así que después de
+  trabajar no vuelve al spawner para desaparecer. Se queda en la escena y
+  vuelve a usar el escritorio cuando su necesidad lo pide.
+- `can_spawn()` ignora el tope global de población: el médico es manual y único.
+- El spawner no corre su `_process`, pero sigue registrado como punto de
+  referencia de la escena. Ni siquiera `start()` reactiva la aparición por
+  intervalo: la única entrada es la tecla.
+- Los NPCs normales **no pueden usar `work`**: solo el grupo `doctor_npcs`
+  puede reservar la silla del operador. Los normales únicamente usan `sit`, que
+  en el Escritorio de trabajo corresponde a las sillas de pacientes.
+- Si no hay un Escritorio de trabajo libre, el NavMesh no está listo o el
+  jugador está a menos de `min_player_distance`, la tecla no invoca nada.
+- **Feedback**: cada pulsación muestra un mensaje centrado abajo durante
+  `feedback_duration` segundos. El texto y el color cambian según el resultado
+  (invocado, ya presente o el motivo del fallo). También emite las señales
+  `doctor_summoned`, `doctor_already_present` y `doctor_summon_failed`.
+
+En `map1.tscn` el POI es `Spawners/DoctorSpawner`, dentro de la sala del
+escritorio, con `require_objective = true`, `objective_affordance = &"work"`,
+`need = &"work"` y `need_start = 1.0`.
+
+`BuildDemo` de `map1` tiene `ensure_work_desk = true`: antes de hornear el
+NavMesh comprueba que exista el objeto especial `work_desk` y repara la receta
+si el guardado local (`map1.build.json`, ignorado por git) perdió piezas. El
+editor puede reescribir ese archivo y dejar el escritorio sin su silla de
+operador: entonces la receta no se forma, la silla queda como una silla común y
+la Y responde “No hay un Escritorio de trabajo libre”. La reparación busca el
+escritorio base y repone, probando celdas y rotaciones alrededor:
+
+1. la **silla del operador** (`furniture_chair_desktop_01`), que ya alcanza para
+   formar el conjunto;
+2. solo si hiciera falta, la **banca de pacientes**
+   (`furniture_patient_chairs_01`).
+
+Las piezas que no cierran la receta se deshacen, así no quedan muebles sueltos.
+Las piezas que comparten celda ancla con otra (la silla acoplada al escritorio)
+se guardan igual: el controlador mantiene una lista propia de todas las piezas,
+no solo el índice por celda. `Ctrl+S` guarda la construcción completa y al
+recargar el conjunto se vuelve a formar.
+
+Además, el conjunto `work_desk` declara `exclusive_group = &"doctor_npcs"`: solo
+el médico puede reservar **cualquiera** de sus sillas, incluidas las de
+pacientes. Ningún NPC normal lo usa. El médico lleva una etiqueta flotante
+`MÉDICO` para distinguirlo del resto del personal (todos comparten modelo).
+
+| Propiedad | Default | Qué hace |
+|---|---|---|
+| `summon_action` | `&"summon_doctor"` | Acción que invoca al médico; se crea si no existe. |
+| `summon_key` | `KEY_Y` | Tecla física que se registra cuando la acción no existe. |
+| `show_feedback` | `true` | Muestra el aviso de invocación en pantalla. |
+| `feedback_duration` | `2.5` | Segundos que queda visible el aviso. |
+
+```gdscript
+var doctor_spawner = get_node("Spawners/DoctorSpawner")
+
+doctor_spawner.summon_doctor()      # NpcAgent existente o nuevo, o null
+doctor_spawner.get_live_doctor()    # NpcAgent o null
+doctor_spawner.get_last_outcome()   # NONE / SUMMONED / ALREADY_PRESENT / FAILED
+doctor_spawner.get_last_feedback()  # Texto mostrado al jugador
+```
 
 ### Aparición y desaparición seguras
 
@@ -99,14 +174,18 @@ El spawn y el despawn ocurren **siempre en el POI** del spawner:
 | Ruta | `route_trips` | `2` | Tramos antes de desaparecer (`A→B` = 1, `B→A` = 2). `0` = infinito. |
 | Ruta | `route_wait_at_target` | `2.0` | Pausa en cada extremo. |
 | Ruta | `route_smart_object_chance` | `0.25` | Probabilidad de desviarse a un SmartObject. |
+| Ruta | `route_consult_willingness` | `0.6` | Probabilidad de que ESTE NPC acepte consultar alguna vez. El resto queda como caminante A↔B |
+| Ruta | `route_consult_chance` | `0.6` | Probabilidad de consultar en cada tramo (una sola tirada por tramo). |
+| Ruta | `route_consult_radius` | `0.0` | Radio para buscar consultorios activos. `0` = sin límite. |
 | Ruta | `route_smart_object_radius` | `12.0` | Radio de búsqueda durante la ruta. `0` = sin límite. |
 | Ruta | `route_smart_object_timeout` | `15.0` | Tiempo máximo sin empezar la interacción. |
 | Ruta | `route_think_interval` | `1.5` | Cada cuánto se reevalúa el selector. |
-| Ruta | `route_affordances` | `[&"sit", &"work"]` | Affordances que puede elegir al desviarse; se queda con la mejor puntuación. |
+| Ruta | `route_affordances` | `[&"sit"]` | Affordances que puede elegir al desviarse; se queda con la mejor puntuación. `work` está reservada al médico. |
 | Vida del NPC | `need` | `&"rest"` | Necesidad con la que aparece (urgente). |
 | Vida del NPC | `brain_search_radius` | `0.0` | Radio que usa el `NpcBrain`. `0` = sin límite; primero camina a la grilla y ahí elige. |
 | Vida del NPC | `search_timeout` | `30.0` | Si no consigue objeto, vuelve y desaparece. |
 | Vida del NPC | `return_retry_delay` | `3.0` | Cada cuánto recalcula el camino de vuelta. No desaparece en el camino: solo al llegar. |
+| Vida del NPC | `despawn_after_use` | `true` | Si es `true`, usa un objeto, vuelve al spawner y desaparece. El médico lo pone en `false` para quedarse siempre. |
 | Visual | `show_marker` | `true` | Muestra el cilindro del POI. |
 
 ## API
@@ -154,10 +233,44 @@ quede en el POI (nunca en el origen del mundo), que no aparezca con el jugador
 encima ni durante un horneado, que **no desaparezca** al vencer el reintento de
 vuelta y que recién desaparezca al llegar al spawner.
 
+```powershell
+Godot.exe --headless --path . --script res://tests/npc_doctor_smoke_test.gd
+```
+
+La prueba del médico verifica que `map1` forme el Escritorio de trabajo al
+cargar, que el spawner no genere NPCs solo (ni con `start()`), que la acción
+`summon_doctor` esté ligada a **Y**, que el médico sea único, que su cerebro solo
+tenga `work`, que elija el objeto especial `work_desk`, que nunca use sillas ni
+otros objetos, que **permanezca** en la escena después de trabajar y que un NPC
+normal no pueda ocupar la silla del operador. También comprueba el feedback:
+éxito, "ya está en el hospital" y el motivo cuando el jugador bloquea el POI.
+
+```powershell
+Godot.exe --headless --path . --script res://tests/consult_zone_smoke_test.gd
+```
+
+La prueba del consultorio pinta una zona `consult`, comprueba que el médico
+trabaje en el `work_desk`, que un paciente (cerebro normal y NPC de ruta) reserve
+una silla `sit` dentro de la zona y se siente, y que sin médico trabajando el
+consultorio deje de ofrecer asientos.
+
+```powershell
+Godot.exe --headless --path . --script res://tests/consult_waiting_smoke_test.gd
+Godot.exe --headless --path . --script res://tests/consult_route_wait_smoke_test.gd
+```
+
+Las pruebas de espera verifican que, con el consultorio ocupado, un paciente
+espera sentado si hay silla en la zona `waiting`, espera de pie si todas están
+ocupadas, y pasa a consultar cuando se libera el consultorio. La variante de
+ruta comprueba lo mismo usando `NpcRouteFSM`.
+
 ## Límites de esta primera versión
 
-- Una sola interacción por NPC: usa un objeto y se va (no se queda a vivir).
-- Sin colas: si no hay slot libre, el NPC espera a la próxima aparición.
+- Una sola interacción por NPC normal: usa un objeto y se va (no se queda a
+  vivir). El médico es la excepción: es permanente y sigue usando el escritorio.
+- Los pacientes esperan turno en la zona de espera (sentados si hay silla, de
+  pie si están ocupadas). No hay una cola FIFO estricta: el que reserva la
+  silla la conserva hasta que se libera el consultorio o termina su espera.
 - El retorno es al spawner **más cercano** (`prefer_nearest`); se puede cambiar
   a aleatorio en `NpcSpawner.pick_return_spawner()`.
 - Sin horarios, tipos de NPC ni probabilidades por POI.

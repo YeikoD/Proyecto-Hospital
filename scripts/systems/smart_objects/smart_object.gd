@@ -97,6 +97,22 @@ func is_slot_occupied(slot: int) -> bool:
 	return get_slot_state(slot) == SlotState.OCCUPIED
 
 
+## True si el slot acepta la affordance indicada (mismo tag). A diferencia de
+## `find_free_slot`, no exige que este libre: sirve para saber si un objeto
+## tiene asientos de un tipo, aunque esten ocupados.
+func slot_has_affordance(slot: int, affordance_id: StringName) -> bool:
+	if not _valid_slot(slot):
+		return false
+	var affordance := get_affordance(affordance_id)
+	return affordance != null and _slot_accepts(slot, affordance)
+
+
+## Si este objeto puede ser reservado por `agent_id` para `affordance_id`. Los
+## objetos especiales pueden reservar solo ciertas affordances a un grupo.
+func allows_agent(_agent_id: int, _affordance_id: StringName = &"") -> bool:
+	return true
+
+
 # --------------------------------------------------------------------------
 # Reservas
 # --------------------------------------------------------------------------
@@ -173,17 +189,10 @@ func get_use_position(slot: int) -> Vector3:
 
 ## Punto exterior al que el NPC debe caminar antes de usar el slot.
 ## El NavMesh lo ajusta igualmente a la superficie caminable más cercana.
+## Debe coincidir con `get_approach_transform().origin`: es el mismo punto que
+## usa la animación al terminar, para que el NPC no quede a medio camino.
 func get_approach_position(slot: int) -> Vector3:
-	if not _valid_slot(slot):
-		return global_position
-
-	var approach := get_node_or_null("Approach_%d" % slot) as Node3D
-	if approach != null:
-		return approach.global_position
-
-	var marker := _slots[slot]
-	# En Godot el frente local es -Z: alejarse del objeto es restar basis.z.
-	return marker.global_position - marker.global_transform.basis.z * fallback_approach_distance
+	return get_approach_transform(slot).origin
 
 
 ## Transform de alineación para el NPC (POI): posición y hacia dónde mira.

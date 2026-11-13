@@ -58,6 +58,8 @@ data/build_items/muebles/
 tests/special_object_smoke_test.gd
 tests/special_object_overlap_smoke_test.gd
 tests/patient_desk_smoke_test.gd
+tests/chair_extension_smoke_test.gd
+tests/desk_dock_smoke_test.gd
 ```
 
 ## Reglas de combinación
@@ -79,15 +81,22 @@ Para que el conjunto se forme:
    pacientes. Así el conjunto funciona con el escritorio en cualquier rotación
    y da igual en cuál de los dos lados se coloque la silla. Si la receta no usa
    banca (solo sillas de escritorio como clientes), se usa `operator_side` como
-   pista: un lado local de la base. El Escritorio de trabajo usa `(0, 1)`.
+   pista: un lado local de la base. El Escritorio de trabajo usa `(0, -1)`.
    La colocación no exige el lado correcto; solo la formación del conjunto lo
    tiene en cuenta, para que el fantasma no se ponga rojo al acomodar la silla.
-5. **Orientación** (`require_facing`): el frente de la pieza acoplada (`-Z`
+5. **Acople centrado** (`part_dock_center`): el operador solo puede quedar
+   centrado en el lado largo de la base y apoyado contra el borde del lado del
+   operador. Mientras se acerca, el snap lo lleva solo a ese punto y lo gira
+   para mirar a la base; no se puede colocar centrado dentro de la huella ni
+   atravesándola. `part_dock_depth` permite un solape pequeño y controlado
+   (0 = apoyado contra el borde). Aunque el cursor esté una o dos celdas más
+   lejos, la silla de escritorio igual se gira para mirar al escritorio.
+6. **Orientación** (`require_facing`): el frente de la pieza acoplada (`-Z`
    local) debe apuntar hacia la base. Con `snap_part_rotation = true`, al
    formarse el conjunto el sistema gira automáticamente la pieza de 1x1 para
    mirar a la base; si no, hay que orientarla antes con `R`. El parámetro
    `facing_dot` define el cono permitido (`0.7` ≈ 45°).
-6. **Clientes obligatorios** (`client_item_ids`): si la receta define piezas
+7. **Clientes obligatorios** (`client_item_ids`): si la receta define piezas
    client, debe haber al menos `client_min_count` en el **lado opuesto** al
    operador. Para el escritorio se aceptan las sillas de pacientes y sillas de
    escritorio sueltas:
@@ -109,36 +118,39 @@ Así el operador trabaja en su silla y los pacientes se sientan en las suyas.
 
 ### Celdas compartidas
 
-La pieza acoplada puede quedar parcialmente debajo de la base, como una silla de
-escritorio metida medio metro bajo la mesa:
+El operador se apoya contra el borde frontal del escritorio: su centro queda
+justo sobre el borde de la huella y el cuerpo de la silla no la invade. Aun así
+la celda de la base y la del operador pueden tocarse y compartir una celda de
+borde:
 
 - las celdas compartidas **siguen perteneciendo a la base**;
 - la pieza acoplada conserva su propia celda ancla, libre;
 - la ocupación de la pieza se limita a sus celdas libres;
-- la pareja solo se permite si la orientación y el contacto son válidos.
+- la pareja solo se permite si el acople está centrado y la orientación es
+  válida.
 
-Por eso la silla puede colocarse en la celda que el escritorio ya ocupa
-parcialmente. La celda ancla de la silla nunca queda debajo de la base: si el
-snap la deja ahí, el controlador corre el ancla a una celda libre vecina y
-compensa el sub-offset. La silla no se mueve en el mundo y el borrado/guardado
-siguen siendo claros.
+Las piezas client (por ejemplo las sillas de pacientes) sí pueden quedar medio
+metro metidas hacia el escritorio, compartiendo celdas con la base, pero nunca
+centradas dentro de su huella. La celda ancla de la pieza nunca queda debajo de
+la base: si el snap la deja ahí, el controlador corre el ancla a una celda libre
+vecina y compensa el sub-offset. La pieza no se mueve en el mundo y el
+borrado/guardado siguen siendo claros.
 
-El ancla corrida permite además el paso extra de 0,5 m: apuntando al centro de
-la celda del escritorio, la silla se mete hasta quedar medio debajo de la mesa.
-El sub-offset guardado puede llegar a 1,0 m (una celda completa), pero la
-posición visible sigue estando en la sub-grilla de 0,5 m.
+Si la silla se coloca antes que el escritorio y ya está del lado del operador,
+al colocar la base el controlador la corre sola al punto de acople y la gira
+hacia la mesa.
 
 ## Cómo probarlo
 
 1. Entrá al modo construcción (`B`).
 2. Colocá un **Escritorio**.
-3. Seleccioná **Silla Escritorio** y ponela de cualquiera de los dos lados
-   largos del escritorio. No importa si el snap la mete medio metro bajo el
-   escritorio: al formarse el conjunto se orienta sola hacia la mesa.
+3. Seleccioná **Silla Escritorio** y acercala al lado largo del escritorio. El
+   fantasma se centra solo en el medio del borde frontal y gira la silla para
+   mirar a la mesa. No se puede soltar dentro de la huella ni atravesándola.
 4. Del lado opuesto a esa silla, directamente detrás, colocá **Sillas de
    pacientes** o sillas de escritorio sueltas. Podés poner hasta dos piezas
-   client y orientarlas a lo ancho. Cada silla puede quedar medio metro metida
-   hacia el escritorio aunque el conjunto ya esté formado.
+   client y orientarlas a lo ancho. Cada silla client puede quedar medio metro
+   metida hacia el escritorio aunque el conjunto ya esté formado.
 5. Al colocar la última pieza, debería formarse **Escritorio de trabajo**.
 
 El lado del conjunto lo define la banca de pacientes: la silla del operador va
@@ -186,27 +198,36 @@ silla no importa: se acomoda sola al formarse el conjunto.
 | `client_slot_tag` | `"seat"` | Tag de los slots de las piezas client |
 | `require_facing` | `true` | Exige que la pieza mire a la base |
 | `snap_part_rotation` | `true` | Gira la pieza de 1x1 para mirar a la base al formarse |
-| `operator_side` | `(0, -1)` | Pista de lado local cuando no hay banca de pacientes; `(0, 0)` = sin restricción. El Escritorio de trabajo usa `(0, 1)` |
+| `part_dock_center` | `false` | Exige que el operador quede centrado en el lado largo y apoyado en el borde frontal |
+| `part_dock_depth` | `0.0` | Metros de solape permitido al acoplarse (`0` = apoyado contra el borde) |
+| `operator_side` | `(0, -1)` | Pista de lado local cuando no hay banca de pacientes; `(0, 0)` = sin restricción. El Escritorio de trabajo usa `(0, -1)` |
 | `remove_together` | `false` | Al borrar una pieza, borra también el resto |
 | `max_gap` | `0.08` | Hueco máximo entre huellas, en metros |
 | `facing_dot` | `0.7` | Tolerancia angular del frente |
-| `client_min_count` | `1` | Mínimo de piezas client para formar el conjunto |
+| `client_min_count` | `1` | Mínimo de piezas client para formar el conjunto (`0` = opcionales) |
 | `client_max_count` | `1` | Máximo de piezas client que se integran (`0` = sin límite) |
 | `client_gap` | `0` | Celdas vacías exactas entre la base y el cliente (`0` = pegado) |
 | `client_lateral_tolerance` | `0.5` | Margen lateral permitido, en celdas |
+| `exclusive_group` | `""` | Grupo que puede reservar las affordances de `exclusive_affordances`. El Escritorio de trabajo usa `doctor_npcs` |
+| `exclusive_affordances` | `[]` | Affordances reservadas a `exclusive_group`. Vacío = todas. El Escritorio de trabajo reserva `work` (el operador) y deja `sit` para los pacientes |
 
 `SpecialObjectDef.is_valid()` comprueba que la receta tenga id, base, pieza
-acoplada y una definición SmartObject. Si hay `client_item_ids`, exige además
-`client_min_count >= 1`.
+acoplada y una definición SmartObject. `client_min_count` puede ser `0`: en ese
+caso el conjunto se forma solo con base + operador y las piezas client se
+integran si aparecen después.
 
-El Escritorio de trabajo usa `client_max_count = 2` y acepta como clientes tanto
-`furniture_patient_chairs_01` como `furniture_chair_desktop_01`. Así sirven las
-sillas de pacientes o sillas sueltas colocadas del otro lado.
+El Escritorio de trabajo usa `client_min_count = 0` y `client_max_count = 2`, y
+acepta como clientes tanto `furniture_patient_chairs_01` como
+`furniture_chair_desktop_01`. **Al anclar la silla al escritorio el objeto
+especial se forma inmediatamente**, sin exigir la banca. Las sillas de pacientes
+se agregan al conjunto cuando se colocan del otro lado.
 
-Mientras haya una banca de pacientes, el operador se busca del lado opuesto a
-esa banca, sin importar la rotación del escritorio. `operator_side = (0, 1)` es
-solo la pista que se usa cuando no hay banca (todo con sillas sueltas). Si el
-modelo del escritorio cambia de orientación, alcanza con invertir ese valor.
+Si hay una banca de pacientes, el operador se busca del lado opuesto a esa
+banca, sin importar la rotación del escritorio. Si no hay banca, cualquier lado
+adyacente sirve como operador: `operator_side = (0, -1)` es solo la pista que
+usa el fantasma para acoplar y centrar la silla. Al colocar la silla cerca del
+escritorio, el controlador la auto-acopla (la centra y la gira hacia la mesa)
+antes de validar la receta.
 
 ## Ciclo de vida
 
@@ -312,7 +333,7 @@ Godot.exe --headless --path . --script res://tests/patient_desk_smoke_test.gd
 Godot.exe --headless --path . --script res://tests/work_desk_ai_smoke_test.gd
 Godot.exe --headless --path . --script res://tests/route_work_smoke_test.gd
 Godot.exe --headless --path . --script res://tests/chair_extension_smoke_test.gd
-Godot.exe --headless --path . --script res://tests/tuck_depth_smoke_test.gd
+Godot.exe --headless --path . --script res://tests/desk_dock_smoke_test.gd
 ```
 
 `special_object_smoke_test.gd` cubre:
@@ -326,15 +347,15 @@ Godot.exe --headless --path . --script res://tests/tuck_depth_smoke_test.gd
 - auto-orientación de una silla colocada mirando al lado opuesto;
 - disolución al borrar una pieza y restauración del resto.
 
-`special_object_overlap_smoke_test.gd` cubre el caso de la silla medio metro
-debajo del escritorio:
+`special_object_overlap_smoke_test.gd` cubre el acople y las celdas
+compartidas:
 
-- el snap conserva el desplazamiento de 0,5 m;
-- la silla puede compartir la celda del escritorio;
+- el snap centra al operador en el borde frontal del escritorio;
+- el fantasma lo gira para mirar a la mesa;
 - la celda compartida sigue perteneciendo al escritorio;
 - la silla se puede colocar aunque todavía no mire al escritorio y luego se
   auto-orienta;
-- si el cursor cae sobre la celda del escritorio, el ancla se corre sola a la
+- si el cursor cae sobre la celda del escritorio, el ancla se resuelve en la
   celda libre del lado de la silla;
 - la receta se forma con pacientes en los dos órdenes de colocación;
 - borrar la silla separa el conjunto y deja el escritorio y los pacientes.
@@ -361,13 +382,16 @@ debajo del escritorio:
 - las dos sillas dan asientos distintos;
 - la silla nueva conserva su celda ancla y se puede borrar.
 
-`tuck_depth_smoke_test.gd` cubre el paso extra de acople con el layout guardado:
+`desk_dock_smoke_test.gd` cubre el acople estricto con el layout guardado:
 
 - el cursor apunta al centro de la celda del escritorio;
-- la silla se coloca medio debajo de la mesa, un paso más adentro;
-- el ancla se corre afuera de la base y el sub-offset compensa la celda;
-- la silla queda justo en el borde real del escritorio;
-- con la banca del lado opuesto el conjunto se forma y reconoce al operador.
+- el snap apoya la silla en el borde frontal, centrada en el lado largo;
+- el ancla se guarda en la celda libre del frente y el sub-offset la centra;
+- la silla se gira sola para mirar al escritorio;
+- no puede colocarse centrada ni atravesando la huella;
+- aunque el cursor quede una celda más lejos, igual se gira hacia el escritorio;
+- con la banca del lado opuesto el conjunto se forma y reconoce al operador;
+- el conjunto también se forma si la silla acoplada se coloca primero.
 
 `work_desk_ai_smoke_test.gd` cubre la integración con la IA:
 
@@ -383,7 +407,8 @@ debajo del escritorio:
 - la ruta entra en `USE_SMART_OBJECT`.
 
 Resultados esperados: `SPECIAL_OBJECT_SMOKE_TEST_OK`, `SPECIAL_OVERLAP_OK`,
-`PATIENT_DESK_OK`, `WORK_DESK_AI_OK` y `ROUTE_WORK_OK`.
+`PATIENT_DESK_OK`, `CHAIR_EXTENSION_OK`, `DESK_DOCK_OK`, `WORK_DESK_AI_OK` y
+`ROUTE_WORK_OK`.
 
 ## Límites actuales
 
@@ -392,8 +417,10 @@ Resultados esperados: `SPECIAL_OBJECT_SMOKE_TEST_OK`, `SPECIAL_OVERLAP_OK`,
   (`client_max_count = 2`); si se coloca otra válida, el conjunto se rehace para
   incluirla.
 - La base solo puede tener un objeto especial activo a la vez.
-- No se pueden mover piezas ya colocadas; para reacomodar hay que borrar y
-  volver a colocar.
+- No se pueden mover piezas ya colocadas salvo el acople automático del
+  operador: si la silla ya está del lado del operador cuando se coloca la base,
+  el sistema la corre y la gira al punto de acople. Para el resto hay que
+  borrar y volver a colocar.
 - La orientación usa pasos de 90° y huellas alineadas a los ejes; no hay
   acoples diagonales ni rotaciones libres.
 - `remove_together` está desactivado por defecto para que borrar una pieza no

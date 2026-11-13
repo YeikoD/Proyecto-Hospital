@@ -37,6 +37,15 @@ extends Resource
 ## Etiqueta de los slots de las piezas client (por ejemplo "seat").
 @export var client_slot_tag: StringName = &"seat"
 
+@export_group("Exclusividad")
+## Si no esta vacio, solo los NPCs de ese grupo pueden reservar las affordances
+## indicadas en `exclusive_affordances`. Ejemplo: el Escritorio de trabajo
+## reserva `work` al medico, pero deja `sit` para los pacientes.
+@export var exclusive_group: StringName = &""
+## Affordances del conjunto que quedan reservadas a `exclusive_group`. Vacio =
+## todas las affordances del conjunto quedan reservadas a ese grupo.
+@export var exclusive_affordances: Array[StringName] = []
+
 @export_group("Reglas")
 ## Lado local de la base donde va el operador. `(0, -1)` = frente/sur con la
 ## base sin rotar. `(0, 0)` = sin restriccion.
@@ -47,6 +56,13 @@ extends Resource
 ## base (solo piezas de 1x1). Asi el fantasma puede colocarse sin pelear con la
 ## rotacion y la silla queda mirando al escritorio.
 @export var snap_part_rotation := true
+## La pieza acoplada solo puede quedar centrada en el lado largo de la base y
+## apoyada contra su borde frontal (el lado del operador). Evita que se pueda
+## colocar atravesada o centrada dentro de la base.
+@export var part_dock_center := false
+## Metros que la pieza acoplada puede meterse bajo la base al acoplarse.
+## `0` = apoyada contra el borde, sin invadir la huella.
+@export_range(0.0, 1.0, 0.01) var part_dock_depth := 0.0
 ## Al borrar una pieza se borra tambien el resto del objeto especial. Si es
 ## false, al borrar una pieza la otra vuelve a comportarse como objeto normal.
 @export var remove_together := false
@@ -71,13 +87,19 @@ func is_valid() -> bool:
 	if id == &"" or base_item_id == &"" or part_item_id == &"" \
 			or smart_object == null:
 		return false
-	if not client_item_ids.is_empty() and client_min_count < 1:
+	if client_min_count < 0 or client_max_count < 0:
 		return false
 	return true
 
 
+## La receta acepta piezas client (aunque no las exija para formarse).
+func has_clients() -> bool:
+	return not client_item_ids.is_empty()
+
+
+## Si el conjunto no puede formarse sin al menos una pieza client.
 func requires_client() -> bool:
-	return not client_item_ids.is_empty() and client_min_count > 0
+	return has_clients() and client_min_count > 0
 
 
 func is_client_item(item_id: StringName) -> bool:

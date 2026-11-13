@@ -5,6 +5,7 @@
 [ext_resource type="PackedScene" uid="uid://cugrp5wwsuaqx" path="res://assets/models/levels/level_01/level_01.glb" id="4_wpo3d"]
 [ext_resource type="PackedScene" uid="uid://cyeiic54bgiqd" path="res://scripts/characters/player/fps_player.tscn" id="7_7jb6e"]
 [ext_resource type="PackedScene" path="res://scripts/characters/npc/npc_spawner.tscn" id="9_30ca6"]
+[ext_resource type="PackedScene" path="res://scripts/characters/npc/npc_doctor_spawner.tscn" id="10_doctor"]
 
 [sub_resource type="Environment" id="Environment_main"]
 background_mode = 1
@@ -16,8 +17,13 @@ reflected_light_source = 2
 tonemap_mode = 2
 fog_height = -1024.0
 
+[sub_resource type="BoxShape3D" id="Shape_ground"]
+size = Vector3(80, 0.5, 80)
+
 [node name="BuildDemo" type="Node3D" unique_id=1611217203]
 script = ExtResource("1_i02tf")
+ensure_work_desk = true
+ensure_consult_seat = true
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=1704758513]
 environment = SubResource("Environment_main")
@@ -36,21 +42,30 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.02, -25)
 cells_x = 25
 cells_z = 50
 
+[node name="Ground" type="StaticBody3D" parent="." unique_id=1667772600 groups=["navigation_static"]]
+transform = Transform3D(2.5, 0, 0, 0, 1, 0, 0, 0, 2.5, 0, 0, 0)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Ground" unique_id=1205856417]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.25, 0)
+shape = SubResource("Shape_ground")
+
+[node name="level_01" parent="Ground" unique_id=644444840 instance=ExtResource("4_wpo3d")]
+transform = Transform3D(0.39999998, 0, 0, 0, 1, 0, 0, 0, 0.39999998, 0, 0, 0)
+
 [node name="FPSPlayer" parent="." unique_id=21838221 instance=ExtResource("7_7jb6e")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.05, 9)
-
-[node name="level_01" parent="." unique_id=644444840 instance=ExtResource("4_wpo3d")]
 
 [node name="NPCs" type="Node3D" parent="." unique_id=1638889886]
 
 [node name="Spawners" type="Node3D" parent="." unique_id=1638889887]
 
 [node name="SpawnerA" parent="Spawners" unique_id=654457107 instance=ExtResource("9_30ca6")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0.1, -57)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2, 0.1, -57)
 npc_parent_path = NodePath("../NPCs")
-spawn_interval_min = 6.0
-spawn_interval_max = 12.0
-initial_delay = 1.0
+max_alive_total = 15
+spawn_interval_min = 2.5
+spawn_interval_max = 5.0
+initial_delay = 0.5
 min_player_distance = 12.0
 require_objective = false
 route_target_path = NodePath("../SpawnerB")
@@ -60,11 +75,12 @@ route_smart_object_chance = 0.35
 route_smart_object_radius = 15.0
 
 [node name="SpawnerB" parent="Spawners" unique_id=584634702 instance=ExtResource("9_30ca6")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.5, 0.1, 75.5)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2.5, 0.1, 75.5)
 npc_parent_path = NodePath("../NPCs")
-spawn_interval_min = 6.0
-spawn_interval_max = 12.0
-initial_delay = 4.0
+max_alive_total = 15
+spawn_interval_min = 2.5
+spawn_interval_max = 5.0
+initial_delay = 1.0
 min_player_distance = 12.0
 require_objective = false
 route_target_path = NodePath("../SpawnerA")
@@ -72,5 +88,12 @@ route_loop = true
 route_wait_at_target = 1.0
 route_smart_object_chance = 0.35
 route_smart_object_radius = 15.0
+
+[node name="DoctorSpawner" parent="Spawners" unique_id=1265797324 instance=ExtResource("10_doctor")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 11.5, 0.1, 3.5)
+npc_parent_path = NodePath("../NPCs")
+min_player_distance = 3.0
+objective_affordance = &"work"
+need = &"work"
 
 [editable path="BuildSystem"]

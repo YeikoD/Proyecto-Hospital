@@ -138,15 +138,25 @@ IDLE → SEEK → TRAVEL → USE → IDLE
                    ↘ timeout / objeto borrado → release + IDLE
 ```
 
-- `needs`: `{"rest": 0.0, "work": 0.0}` (0..1, más alto = más urgente).
-- `need_growth`: cuánto sube por segundo (`rest` 0.01, `work` 0.005).
-- `need_affordances`: `{"rest": "sit", "work": "work"}`.
+- `needs`: `{"rest": 0.0}` (0..1, más alto = más urgente).
+- `need_growth`: cuánto sube por segundo (`rest` 0.01).
+- `need_affordances`: `{"rest": "sit"}`.
 - `need_threshold`: a partir de qué valor busca objeto.
 - `search_radius`, `think_interval`, `travel_timeout`.
 
-Si la necesidad más urgente no tiene un SmartObject libre (por ejemplo, el
-escritorio de trabajo ya está ocupado), el cerebro prueba la siguiente
-necesidad antes de quedarse esperando.
+Los NPCs normales solo descansan en sillas. La necesidad `work` y su
+affordance están reservadas al NPC médico (grupo `doctor_npcs`): el cerebro
+ignora `work` para cualquier otro NPC y el selector de ruta tampoco la elige.
+Además, un objeto especial puede reservar ciertas affordances a un grupo con
+`exclusive_group` + `exclusive_affordances`. El Escritorio de trabajo reserva
+`work` al médico, pero deja `sit` disponible: los asientos de pacientes del
+conjunto solo se usan a través del selector de **consultorio** (zona `consult`
++ médico trabajando + silla libre). El descanso aleatorio y el desvío de ruta
+ignoran el `work_desk`, así que nadie se sienta allí por azar.
+
+Si la necesidad más urgente no tiene un SmartObject libre (por ejemplo, todas
+las sillas están ocupadas), el cerebro prueba la siguiente necesidad antes de
+quedarse esperando.
 
 La reserva ocurre en `SEEK`, **antes** de caminar: dos NPC no eligen la misma
 silla y no pierden el viaje. Cualquier salida anormal (timeout, objeto borrado,

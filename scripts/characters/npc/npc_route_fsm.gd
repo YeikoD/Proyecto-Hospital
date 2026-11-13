@@ -17,7 +17,9 @@ extends Node
 ## desaparece. No reemplaza a NpcBrain: lo usa como accion para la parte de
 ## SmartObjects.
 
-enum State { IDLE, TRAVEL, USE_SMART_OBJECT, WAIT, DONE }
+enum State { IDLE, TRAVEL, USE_SMART_OBJECT, WAIT, WAIT_CONSULT, DONE }
+
+const Consult := preload("res://scripts/characters/npc/npc_consult.gd")
 
 signal route_finished
 
@@ -39,7 +41,19 @@ signal route_finished
 @export var smart_object_timeout := 15.0
 ## Cada cuanto se reevalua el selector mientras camina.
 @export var think_interval := 1.5
+## Radio de busqueda de consultorios activos. 0 = sin limite.
+@export var consult_radius := 0.0
+## Probabilidad de que ESTE NPC acepte consultar alguna vez. El resto queda
+## como caminante A<->B y se dedica a spawnear/despawnear.
+@export_range(0.0, 1.0, 0.01) var consult_willingness := 0.6
+## Probabilidad de consultar en cada tramo (se tira una sola vez por tramo).
+@export_range(0.0, 1.0, 0.01) var consult_chance := 0.6
+## Tiempo que el NPC no vuelve a intentar consultar despues de una consulta.
+@export var consult_cooldown := 25.0
+## Cuanto tiempo se queda el paciente sentado en el consultorio.
+@export var consult_duration := 20.0
 ## Affordances que puede elegir al desviarse. Se queda con la mejor puntuacion.
+## `work` queda fuera para NPCs normales por `can_use_affordance`.
 @export var affordances: Array[StringName] = [&"sit", &"work"]
 ## Affordance de respaldo si `affordances` esta vacio.
 @export var affordance: StringName = &"sit"
@@ -56,6 +70,12 @@ var _smart_timer := 0.0
 var _smart_object_attempted := false
 var _chosen_affordance: StringName = &""
 var _trips := 0
+var _wait_check_timer := 0.0
+var _wait_seated := false
+var _wait_point := Vector3.ZERO
+var _consult_cooldown := 0.0
+var _consult_willing := true
+var _consult_tried_this_leg := false
 
 
 func _ready() -> void:
@@ -71,6 +91,8 @@ func _ready() -> void:
 
 	_brain = _agent.get_node_or_null("NpcBrain") as NpcBrain
 	_origin = _agent.global_position
+	# Un porcentaje de NPCs nunca consulta: quedan como caminantes A<->B.
+	_consult_willing = randf() < clampf(consult_willingness, 0.0, 1.0)
 	_agent.wander = false
 
 	if not _agent.arrived.is_connected(_on_arrived):
@@ -102,6 +124,7 @@ func get_current_target() -> Vector3:
 # --------------------------------------------------------------------------
 
 func _process(delta: float) -> void:
+	_consult_cooldown = maxf(_consult_cooldown - delta, 0.0)
 	match _state:
 		State.TRAVEL:
 			_tick_travel(delta)
@@ -109,6 +132,8 @@ func _process(delta: float) -> void:
 			_tick_smart_object(delta)
 		State.WAIT:
 			_tick_wait(delta)
+		State.WAIT_CONSULT:
+			_tick_wait_consult(delta)
 
 
 func _begin_travel(to_target: bool) -> void:
@@ -157,7 +182,31 @@ func _tick_travel(delta: float) -> void:
 
 
 func _try_start_smart_object() -> bool:
-	if _brain == null or _smart_object_attempted or smart_object_chance <= 0.0:
+	if _brain == null or _smart_object_attempted:
+		return false
+
+	# 1) Decision aleatoria: una sola tirada por tramo. Si falla, este NPC sigue
+	# caminando A<->B hasta el proximo tramo.
+	if _consult_willing and not _consult_tried_this_leg \
+			and _consult_cooldown <= 0.0:
+		_consult_tried_this_leg = true
+		if randf() < clampf(consult_chance, 0.0, 1.0):
+			var room := Consult.find_active_room(_agent, consult_radius)
+			if not room.is_empty():
+				_smart_object_attempted = true
+				var seat := Consult.find_active_seat(_agent, consult_radius, true)
+				if not seat.is_empty():
+					_chosen_affordance = StringName(seat["affordance"].id)
+					_start_consult(seat)
+					return true
+				var waiting := Consult.find_waiting_spot(_agent, room, true)
+				if not waiting.is_empty():
+					_start_wait(waiting)
+					return true
+		# Si falla la tirada o no hay consultorio, el NPC sigue caminando o
+		# hace el desvio aleatorio normal.
+
+	if smart_object_chance <= 0.0:
 		return false
 	var ids: Array[StringName] = []
 	for id in affordances:
@@ -172,8 +221,13 @@ func _try_start_smart_object() -> bool:
 	for id in ids:
 		if id == StringName():
 			continue
+		# `work` es exclusiva del medico: un NPC de ruta nunca ocupa la silla
+		# del operador.
+		if not _brain.can_use_affordance(id):
+			continue
 		var candidates := SmartObjectRegistry.find_candidates(
-			id, _agent.global_position, smart_object_radius
+			id, _agent.global_position, smart_object_radius,
+			_agent.get_instance_id(), Callable(self, "_skip_smart_object")
 		)
 		if candidates.is_empty():
 			continue
@@ -193,6 +247,37 @@ func _try_start_smart_object() -> bool:
 	_chosen_affordance = best_id
 	_start_smart_object()
 	return true
+
+
+## El desvio aleatorio no usa las sillas del escritorio ni las de la sala de
+## espera: esas solo se usan para consultar o esperar turno. El medico si puede
+## usar `work`.
+func _skip_smart_object(obj) -> bool:
+	if _agent != null and _agent.is_in_group(Consult.DOCTOR_GROUP):
+		return false
+	return Consult.is_work_desk(obj) or Consult.is_in_waiting_zone(obj)
+
+
+## El paciente ya tiene una silla reservada en un consultorio activo.
+func _start_consult(candidate: Dictionary) -> void:
+	_state = State.USE_SMART_OBJECT
+	_smart_timer = maxf(smart_object_timeout, 1.0)
+	_agent.stop()
+	_agent.set_frozen(false)
+	_brain.set_enabled(true)
+	if not _brain.begin_reserved(
+			candidate["object"], candidate["affordance"], int(candidate["slot"]),
+			consult_duration, true
+	):
+		if candidate["object"] != null and is_instance_valid(candidate["object"]):
+			candidate["object"].release(
+				int(candidate["slot"]), _agent.get_instance_id())
+		_finish_smart_object(false)
+		return
+	if debug:
+		print("[NpcRouteFSM] %s va al consultorio %s" % [
+			_agent.name, candidate.get("zone_id", "?")
+		])
 
 
 func _start_smart_object() -> void:
@@ -252,6 +337,8 @@ func _on_brain_interaction_aborted(_object: Node) -> void:
 func _finish_smart_object(used: bool) -> void:
 	if _brain != null:
 		_brain.set_enabled(false)
+	if used:
+		_consult_cooldown = maxf(consult_cooldown, 0.0)
 	_state = State.TRAVEL
 	_chosen_affordance = &""
 	_think_timer = maxf(think_interval, 0.1)
@@ -292,11 +379,87 @@ func _tick_wait(delta: float) -> void:
 	if _wait_timer > 0.0:
 		return
 	if _should_continue_route():
-		# Cada tramo vuelve a tirar el dado para el desvio a SmartObjects.
+		# Cada tramo vuelve a tirar el dado para consulta y desvio.
 		_smart_object_attempted = false
+		_consult_tried_this_leg = false
 		_begin_travel(not _to_target)
 	else:
 		_finish_route()
+
+
+## El medico esta ocupado: sentarse en la sala de espera o quedarse de pie si
+## todas las sillas estan ocupadas. Mientras espera, reintenta la consulta.
+func _start_wait(spot: Dictionary) -> void:
+	if spot.is_empty():
+		return
+	_state = State.WAIT_CONSULT
+	_wait_check_timer = 0.0
+	_wait_seated = bool(spot.get("seated", false))
+	_wait_point = spot.get("point", _agent.global_position)
+	if _wait_seated:
+		_agent.stop()
+		_agent.set_frozen(false)
+		_brain.set_enabled(true)
+		if not _brain.begin_reserved(
+				spot["object"], spot["affordance"], int(spot["slot"]),
+				Consult.WAITING_DURATION, false
+		):
+			if spot["object"] != null and is_instance_valid(spot["object"]):
+				spot["object"].release(
+					int(spot["slot"]), _agent.get_instance_id())
+			_brain.set_enabled(false)
+			_wait_seated = false
+			_agent.move_to(_wait_point)
+	else:
+		_agent.move_to(_wait_point)
+	if debug:
+		print("[NpcRouteFSM] %s espera turno (%s)" % [
+			_agent.name, "sentado" if _wait_seated else "de pie"
+		])
+
+
+func _tick_wait_consult(delta: float) -> void:
+	_wait_check_timer -= delta
+	if _wait_check_timer > 0.0:
+		return
+	_wait_check_timer = maxf(Consult.WAITING_CHECK_INTERVAL, 0.5)
+
+	var room := Consult.find_active_room(_agent, consult_radius)
+	if room.is_empty():
+		_finish_wait()
+		return
+
+	var seat := Consult.find_active_seat(_agent, consult_radius, true)
+	if not seat.is_empty():
+		if _wait_seated and _brain != null:
+			_brain.set_enabled(false)
+		_chosen_affordance = StringName(seat["affordance"].id)
+		_start_consult(seat)
+		return
+
+	# La silla de espera se libero o termino su turno: volver a sentarse o
+	# seguir esperando de pie.
+	if _wait_seated and _brain != null \
+			and _brain.get_state() == NpcBrain.State.IDLE:
+		var wait := Consult.find_waiting_spot(_agent, room, true)
+		if wait.is_empty():
+			_finish_wait()
+		else:
+			_start_wait(wait)
+	elif not _wait_seated:
+		# Esperando de pie: si se libera una silla de espera, sentarse.
+		var wait := Consult.find_waiting_spot(_agent, room, true)
+		if not wait.is_empty() and bool(wait.get("seated", false)):
+			_start_wait(wait)
+
+
+func _finish_wait() -> void:
+	if _brain != null and _brain.enabled:
+		_brain.set_enabled(false)
+	_state = State.TRAVEL
+	_chosen_affordance = &""
+	_wait_seated = false
+	_begin_travel(_to_target)
 
 
 func _should_continue_route() -> bool:

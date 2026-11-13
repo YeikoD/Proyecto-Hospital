@@ -107,6 +107,16 @@ func _run() -> void:
 
 	# --- Integración: el cerebro reserva, viaja, usa y libera -------------
 	var npc := demo.get_node("NPCs/NPC1") as NpcAgent
+	# Los demas NPCs deambulan al azar y pueden bloquear el camino. Esta prueba
+	# mide el flujo del SmartObject; la evasion tiene su propia prueba.
+	for other in demo.get_node("NPCs").get_children():
+		if other == npc:
+			continue
+		var other_npc := other as NpcAgent
+		if other_npc != null:
+			other_npc.wander = false
+			other_npc.stop()
+			other_npc.set_physics_process(false)
 	var brain := npc.get_node("NpcBrain") as NpcBrain
 	_check(brain != null, "el NPC trae un NpcBrain")
 	var anim_manager := npc.get_animation_manager()

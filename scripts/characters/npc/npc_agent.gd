@@ -33,6 +33,12 @@ const NPC_AVOID_DELAY := 0.15
 const NPC_AVOID_SIDE := 1.2
 ## Espera entre desvios para no oscilar.
 const NPC_AVOID_COOLDOWN := 0.5
+## Tiempo maximo sin avanzar durante un desvio antes de abandonarlo. Evita que
+## el NPC quede trabado para siempre contra un mueble o una pared cuando el
+## punto de desvio dejo de ser alcanzable.
+const NPC_DETOUR_STALL_TIMEOUT := 3.0
+## Distancia que cuenta como avance real durante un desvio.
+const NPC_DETOUR_PROGRESS := 0.25
 
 @export_group("Movimiento")
 @export var speed := 2.2
@@ -58,6 +64,8 @@ const NPC_AVOID_COOLDOWN := 0.5
 @export var npc_avoid_delay := NPC_AVOID_DELAY
 ## Cuanto se aparta lateralmente al esquivar.
 @export var npc_avoid_side := NPC_AVOID_SIDE
+## Tiempo sin avanzar antes de abandonar un desvio y retomar el destino.
+@export var npc_detour_stall_timeout := NPC_DETOUR_STALL_TIMEOUT
 
 @export_group("Nodos")
 ## Vacio = se busca automaticamente un NavigationAgent3D hijo.
@@ -84,6 +92,8 @@ var _target_arrive_distance := DEFAULT_ARRIVE_DISTANCE
 ## Desvio temporal para esquivar a otro NPC. Al alcanzarlo se retoma `_target`.
 var _detour_active := false
 var _detour_target := Vector3.ZERO
+var _detour_stall := 0.0
+var _detour_last_pos := Vector3.ZERO
 var _blocked_time := 0.0
 var _avoid_cooldown := 0.0
 ## Congelado = el cerebro lo controla (por ejemplo, mientras usa un objeto).
@@ -153,6 +163,7 @@ func move_to(world_position: Vector3, arrive_distance := 0.0) -> void:
 	_has_target = true
 	_wait = 0.0
 	_detour_active = false
+	_detour_stall = 0.0
 	_blocked_time = 0.0
 	_avoid_cooldown = 0.0
 	_agent.target_position = target
@@ -180,6 +191,7 @@ func stop() -> void:
 	_has_target = false
 	_wait = 0.0
 	_detour_active = false
+	_detour_stall = 0.0
 	_blocked_time = 0.0
 	_avoid_cooldown = 0.0
 	velocity = Vector3.ZERO
@@ -352,7 +364,10 @@ func _decelerate(delta: float) -> void:
 func _update_npc_avoidance(delta: float, forward: Vector3) -> void:
 	if _avoid_cooldown > 0.0:
 		_avoid_cooldown = maxf(_avoid_cooldown - delta, 0.0)
-	if _detour_active or not _has_target:
+	if _detour_active:
+		_tick_detour(delta)
+		return
+	if not _has_target:
 		return
 
 	var blocker := _find_npc_in_front(forward)
@@ -461,13 +476,34 @@ func _start_detour(blocker: NpcAgent, forward: Vector3) -> void:
 
 	_detour_target = snapped
 	_detour_active = true
+	_detour_stall = 0.0
+	_detour_last_pos = global_position
 	_agent.target_desired_distance = DEFAULT_ARRIVE_DISTANCE
 	_agent.target_position = snapped
+
+
+## Durante un desvio, vigila que el NPC avance. Si se queda trabado (por
+## ejemplo, contra un mueble que no estaba en el NavMesh horneado), abandona el
+## desvio en vez de quedar bloqueado para siempre.
+func _tick_detour(delta: float) -> void:
+	var pos := global_position
+	if pos.distance_to(_detour_last_pos) > NPC_DETOUR_PROGRESS:
+		_detour_last_pos = pos
+		_detour_stall = 0.0
+		return
+	_detour_stall += delta
+	if _detour_stall < maxf(npc_detour_stall_timeout, 0.5):
+		return
+	_detour_stall = 0.0
+	_end_detour()
+	# Un poco mas de espera para que el otro NPC se mueva antes de reintentar.
+	_avoid_cooldown = maxf(_avoid_cooldown, NPC_AVOID_COOLDOWN * 2.0)
 
 
 ## Vuelve a apuntar al destino original despues del desvio.
 func _end_detour() -> void:
 	_detour_active = false
+	_detour_stall = 0.0
 	_avoid_cooldown = NPC_AVOID_COOLDOWN
 	if _agent == null:
 		return

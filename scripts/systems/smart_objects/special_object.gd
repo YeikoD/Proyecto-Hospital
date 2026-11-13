@@ -126,3 +126,24 @@ func _add_marker(
 	if tag != StringName():
 		marker.set_meta("slot_tag", tag)
 	add_child(marker)
+
+
+## Un conjunto puede reservar ciertas affordances a un grupo (por ejemplo, la
+## silla del operador del Escritorio de trabajo al medico). Si la affordance no
+## esta en `exclusive_affordances`, el resto de los NPCs puede usarla.
+func allows_agent(agent_id: int, affordance_id: StringName = &"") -> bool:
+	if special_def == null or special_def.exclusive_group == StringName():
+		return true
+	var exclusive := special_def.exclusive_affordances
+	if not exclusive.is_empty() and affordance_id != StringName() \
+			and not exclusive.has(affordance_id):
+		return true
+	if agent_id <= 0:
+		return true
+	var agent := instance_from_id(agent_id)
+	if agent == null or not is_instance_valid(agent):
+		return true
+	if agent.is_in_group(special_def.exclusive_group):
+		return true
+	var parent: Node = agent.get_parent()
+	return parent != null and parent.is_in_group(special_def.exclusive_group)

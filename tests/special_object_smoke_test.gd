@@ -43,8 +43,10 @@ func _run() -> void:
 			work_def = def
 	_check(work_def != null, "carga la receta 'work_desk'")
 	_check(work_def != null and work_def.is_valid(), "la receta es valida")
-	_check(work_def != null and work_def.requires_client(),
-		"la receta exige una pieza client")
+	_check(work_def != null and work_def.has_clients(),
+		"la receta acepta piezas client")
+	_check(work_def != null and not work_def.requires_client(),
+		"la pieza client es opcional: escritorio + operador ya forman")
 	_check(work_def != null
 			and work_def.client_item_ids.has(&"furniture_patient_chairs_01"),
 		"la pieza client son las sillas de pacientes")
@@ -65,15 +67,15 @@ func _run() -> void:
 	_check(controller.place_object_item(chair, Vector2i(5, 6), 0),
 		"coloca la silla de escritorio mirando al escritorio")
 	await process_frame
-	_check(controller.get_special_object_count() == 0,
-		"sin sillas de pacientes todavia no se forma")
+	_check(controller.get_special_object_count() == 1,
+		"escritorio + operador ya forman el objeto especial")
 	# Banca de pacientes al lado opuesto, pegada al escritorio y a lo ancho.
 	_check(controller.place_object_item(patients, Vector2i(5, 4), 1),
 		"coloca las sillas de pacientes al otro lado")
 	await process_frame
 
 	_check(controller.get_special_object_count() == 1,
-		"escritorio + operador + pacientes forman el objeto especial")
+		"la banca de pacientes se integra al objeto especial")
 	var special := controller.get_special_object_at(Vector2i(5, 6))
 	_check(special != null, "la silla pertenece al objeto especial")
 	_check(controller.get_special_object_at(Vector2i(5, 5)) == special,

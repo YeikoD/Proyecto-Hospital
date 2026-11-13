@@ -69,13 +69,20 @@ static var _spawners: Array = []
 @export_range(0, 50) var route_trips := 2
 @export var route_wait_at_target := 2.0
 @export_range(0.0, 1.0, 0.01) var route_smart_object_chance := 0.25
+## Probabilidad de que un NPC acepte consultar alguna vez (0..1).
+@export_range(0.0, 1.0, 0.01) var route_consult_willingness := 0.6
+## Probabilidad de consultar en cada tramo.
+@export_range(0.0, 1.0, 0.01) var route_consult_chance := 0.6
+## Radio para buscar consultorios activos. 0 = sin limite.
+@export var route_consult_radius := 0.0
 ## Radio para desviarse a un SmartObject durante la ruta. 0 = sin limite.
 @export var route_smart_object_radius := 12.0
 @export var route_smart_object_timeout := 15.0
 @export var route_think_interval := 1.5
 ## Affordances que puede elegir al desviarse durante la ruta. Se queda con la
-## de mejor puntuacion: silla para descansar o escritorio de trabajo.
-@export var route_affordances: Array[StringName] = [&"sit", &"work"]
+## de mejor puntuacion. Por defecto solo `sit`: `work` es la silla del operador
+## del Escritorio de trabajo y esta reservada al medico.
+@export var route_affordances: Array[StringName] = [&"sit"]
 
 @export_group("Vida del NPC")
 ## Necesidad que el NPC llega con ganas de satisfacer.
@@ -89,6 +96,10 @@ static var _spawners: Array = []
 ## Cada cuanto reintenta el camino de vuelta si no llega al spawner. El NPC
 ## nunca desaparece en el camino: solo al llegar.
 @export var return_retry_delay := 3.0
+## Si es true, el NPC usa un objeto, vuelve al spawner y desaparece.
+## Los NPCs persistentes (por ejemplo el medico) lo ponen en false: se quedan
+## viviendo en la escena y siguen usando objetos mientras tengan necesidad.
+@export var despawn_after_use := true
 
 @export_group("Visual")
 ## El marcador es solo para ubicar el POI en el editor y en el juego.
@@ -291,6 +302,8 @@ func _configure_npc(npc: NpcAgent) -> void:
 		brain.need_affordances = {need_key: objective_affordance}
 		brain.need_threshold = minf(start, 0.5)
 		brain.search_radius = brain_search_radius
+		# En modo ruta el FSM maneja consulta/espera; el cerebro solo ejecuta.
+		brain.consult_enabled = not route_mode
 		# En modo ruta el NpcRouteFSM enciende el cerebro solo cuando decide
 		# desviarse a usar un SmartObject.
 		brain.set_enabled(not route_mode)
@@ -305,12 +318,15 @@ func _configure_npc(npc: NpcAgent) -> void:
 		route.set("wait_at_target", route_wait_at_target)
 		route.set("smart_object_chance", route_smart_object_chance)
 		route.set("smart_object_radius", route_smart_object_radius)
+		route.set("consult_willingness", route_consult_willingness)
+		route.set("consult_chance", route_consult_chance)
+		route.set("consult_radius", route_consult_radius)
 		route.set("smart_object_timeout", route_smart_object_timeout)
 		route.set("think_interval", route_think_interval)
 		route.set("affordances", route_affordances)
 		route.set("affordance", objective_affordance)
 		npc.add_child(route)
-	else:
+	elif despawn_after_use:
 		var cycle := NpcSpawnCycle.new()
 		cycle.name = "NpcSpawnCycle"
 		cycle.search_timeout = search_timeout

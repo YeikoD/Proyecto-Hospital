@@ -48,8 +48,11 @@ Godot.exe --path . res://scenes/demos/nav_demo.tscn
 
 ## Menú
 
-El menú se abre con `M`. Está organizado en pestañas para dejar clara la función
-de cada sección:
+El menú se abre con `M` (y se cierra con `M` o con el botón ✕). Está organizado
+en pestañas para dejar clara la función de cada sección y tiene una **barra de
+búsqueda** para filtrar elementos por nombre. El elemento activo queda
+**resaltado** (borde de acento y distintivo ✓) y su nombre y notas se muestran
+en el pie del panel. Las pestañas son:
 
 - **Construir**: obra y acabados de la estructura.
   - **Base**: pared, piso y sus borradores juntos (pared básica, suelo básico,
@@ -81,7 +84,8 @@ animación.
 ## Zonas
 
 Las zonas son áreas lógicas pintadas sobre el piso. Sirven para comunicar a la
-IA qué hay en cada parte del hospital (la IA se conectará más adelante).
+IA qué hay en cada parte del hospital. Hoy se usa la zona **Consultorio** para
+el comportamiento de atención a pacientes.
 
 - **Pincel de zona** (pestaña **Zonas → Pinceles**): clic y arrastrar pinta un
   **rectángulo** de celdas, igual que el pincel de pisos. La zona nace como
@@ -104,12 +108,60 @@ IA qué hay en cada parte del hospital (la IA se conectará más adelante).
 - Las zonas se guardan en el JSON de construcción (`zones`) y se recargan con
   el nivel.
 
-API para la futura IA:
+### Consultorio y pacientes
+
+Para que un paciente vaya a sentarse a ser atendido, dentro de una zona
+**Consultorio** tienen que darse las tres condiciones:
+
+1. Un **Escritorio de trabajo** (`work_desk`) dentro de la zona.
+2. Un **médico** (grupo `doctor_npcs`) usando la affordance `work` de ese
+   escritorio. El operador sigue siendo exclusivo del médico.
+3. Una **silla libre** con slot `sit` dentro de la misma zona. Puede ser una
+   silla de pacientes suelta o un asiento cliente del propio escritorio.
+
+Cuando se cumple, los NPCs habilitados reservan la silla más cercana y se
+sientan durante `consult_duration` (20 s por defecto), simulando la consulta.
+No todos consultan: cada NPC recibe una `consult_willingness` fija al aparecer
+(parte de ellos nunca consulta y sigue caminando A↔B, spawneando y
+despawneando), y los dispuestos hacen **una sola tirada por tramo**
+(`consult_chance`). Si falla, siguen caminando ese tramo.
+
+Si el médico está ocupado (la silla de consultorio está ocupada), el paciente
+espera en la zona **Sala de espera**:
+
+- La zona de espera está **activa** solo si tiene al menos una silla con slot
+  `sit`.
+- Si hay una silla libre, el paciente se sienta a esperar.
+- Si todas las sillas de espera están ocupadas, espera **de pie** en un punto
+  libre de la zona.
+- Cada segundo vuelve a comprobar si se liberó el consultorio; cuando pasa,
+  deja la espera y va a consultar.
+- Las sillas de la sala de espera **no** se usan para descansar al azar: solo
+  para esperar una consulta. El caminar A↔B y el desvío aleatorio a otros
+  muebles se mantienen.
+
+Si el médico deja de trabajar, no se ofrecen sillas nuevas; los pacientes que ya
+están sentados terminan su turno y los que esperan vuelven a su rutina.
+
+Importante: la silla tiene que estar **dentro** de la zona. Una silla del
+pasillo o de la sala de espera no se usa para la consulta.
+
+API de zonas:
 
 ```gdscript
 signal zones_changed
+
 func get_zone_count() -> int
 func get_zone_type(cell: Vector2i) -> StringName
+func get_zone_id_at_cell(cell: Vector2i) -> StringName
+func get_zone_id_at_world(world: Vector3) -> StringName
+func get_zone_type_of(zone_id: StringName) -> StringName
+func get_zone_type_at_world(world: Vector3) -> StringName
+func get_zone_ids_of_type(type_id: StringName) -> Array[StringName]
+func get_zone_cells(zone_id: StringName) -> Array[Vector2i]
+func is_world_in_zone(world: Vector3, zone_id: StringName) -> bool
+func paint_zone(cells: Array[Vector2i], type_id: StringName) -> StringName
+func set_zone_type(zone_id: StringName, type_id: StringName) -> bool
 ```
 
 ## Integrarlo en una escena
@@ -284,16 +336,19 @@ El conjunto ofrece `work` al operador y `sit` a los pacientes.
 
 - Las piezas siguen existiendo y conservan sus colliders, pero la IA deja de
   verlas por separado: solo ve el objeto combinado.
-- La silla del operador puede compartir celdas con el escritorio: puede quedar
-  medio metro debajo. La base conserva la propiedad de las celdas compartidas.
+- La silla del operador se acopla en un único punto: **centrada en el lado
+  largo del escritorio y apoyada contra su borde frontal**. No puede quedar
+  dentro de la huella ni atravesar la mesa.
+- El fantasma muestra ese acople ya resuelto: al acercar la silla, se centra y
+  gira sola para mirar al escritorio. Las recetas pueden habilitar un pequeño
+  solape con `part_dock_depth`, pero nunca suficiente para atravesar la base.
 - Con el conjunto ya formado se pueden agregar más sillas del lado de los
-  pacientes; también pueden quedar medio metro metidas y compartir celdas con
-  el escritorio, sin correr una celda entera hacia atrás.
-- Apuntando al centro de la celda del escritorio, la silla del operador se mete
-  un paso más (0,5 m) hasta quedar medio debajo de la mesa. El ancla se guarda
-  en una celda libre vecina y el sub-offset compensa la diferencia.
-- La silla del operador se puede colocar sin preocuparse por la rotación: al
-  formarse el conjunto se auto-orienta hacia el escritorio.
+  pacientes; esas piezas client sí pueden quedar medio metro metidas y
+  compartir celdas con el escritorio, sin correr una celda entera hacia atrás.
+- Si la silla se coloca antes que el escritorio y ya está del lado del
+  operador, al colocar la base se corre sola al punto de acople.
+- La silla del operador se puede colocar sin preocuparse por la rotación: el
+  sistema la gira automáticamente hacia el escritorio al acoplarla.
 - El operador se busca del lado opuesto a la banca de pacientes, así funciona
   con el escritorio en cualquier rotación. Sillas sueltas como clientes usan
   `operator_side` como pista. Así una silla suelta detrás no se confunde con el
@@ -389,6 +444,12 @@ archivo, y el detalle se imprime en la consola de Godot.
   `user://build_saves/<nivel>.build.json`.
 - Las piezas se guardan por el `id` de su `BuildItem`, asi que sobreviven a
   cambios de escena siempre que el item siga existiendo en `data/build_items`.
+- Se guardan **todas** las piezas, incluidas las que comparten celda ancla con
+  otra (por ejemplo la silla acoplada al escritorio). Al recargar, el objeto
+  especial se vuelve a formar.
+- `Ctrl+S` lo atiende el juego: la ventana del juego debe tener el foco. Si el
+  foco esta en el editor, ese `Ctrl+S` guarda la escena del editor, no la
+  construccion. La tecla `°` tambien guarda desde el juego.
 
 ## Estructura
 
