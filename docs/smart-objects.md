@@ -50,7 +50,11 @@ scripts/systems/smart_objects/
 ├── smart_object_def.gd        Acciones que anuncia el objeto
 ├── affordance_def.gd          Una acción concreta ("sit", "sleep", ...)
 ├── smart_object_registry.gd   Índice estático global + claim_best()
-└── prefabs/chair.tscn         Silla de ejemplo (Slot + POI + Approach)
+├── special_object_def.gd      Receta de combinación de piezas
+├── special_object.gd          SmartObject formado por varias piezas
+└── special_object_loader.gd   Carga de recetas de objetos especiales
+
+prefabs/items/chair.tscn       Silla de ejemplo (Slot + POI + Approach)
 scripts/characters/npc/
 ├── npc_agent.gd               Locomoción + señal `arrived` + frozen
 ├── npc_brain.gd               Necesidades → utilidad → FSM
@@ -59,8 +63,11 @@ scripts/characters/npc/
 data/smart_objects/
 ├── sit.tres                   Affordance "sit" (usa sit_animations.tres)
 ├── sit_animations.tres        Secuencia de la silla
-└── seat.tres                  Definición "seat" (reutilizable)
+├── seat.tres                  Definición "seat" (reutilizable)
+├── work.tres                  Affordance "work" del escritorio de trabajo
+└── work_desk.tres             Definición del escritorio de trabajo
 tests/smart_object_smoke_test.gd
+tests/special_object_smoke_test.gd
 tests/animation_manager_smoke_test.gd
 ```
 
@@ -131,11 +138,15 @@ IDLE → SEEK → TRAVEL → USE → IDLE
                    ↘ timeout / objeto borrado → release + IDLE
 ```
 
-- `needs`: `{"rest": 0.0}` (0..1, más alto = más urgente).
-- `need_growth`: cuánto sube por segundo.
-- `need_affordances`: `{"rest": "sit"}`.
+- `needs`: `{"rest": 0.0, "work": 0.0}` (0..1, más alto = más urgente).
+- `need_growth`: cuánto sube por segundo (`rest` 0.01, `work` 0.005).
+- `need_affordances`: `{"rest": "sit", "work": "work"}`.
 - `need_threshold`: a partir de qué valor busca objeto.
 - `search_radius`, `think_interval`, `travel_timeout`.
+
+Si la necesidad más urgente no tiene un SmartObject libre (por ejemplo, el
+escritorio de trabajo ya está ocupado), el cerebro prueba la siguiente
+necesidad antes de quedarse esperando.
 
 La reserva ocurre en `SEEK`, **antes** de caminar: dos NPC no eligen la misma
 silla y no pierden el viaje. Cualquier salida anormal (timeout, objeto borrado,
@@ -265,6 +276,10 @@ con `NpcAgent.play_interaction()`.
   La celda ancla no cambia, pero la huella ocupada se recalcula según el
   desplazamiento fino, de modo que un mueble desplazado puede cubrir una celda
   adicional.
+- Algunos muebles pueden **combinarse** en un objeto especial: por ejemplo,
+  colocar una silla de escritorio delante de un escritorio forma el SmartObject
+  "Escritorio de trabajo". Ver
+  [objetos especiales](objetos-especiales.md).
 - Al borrar, el orden de prioridad es **objeto → pared → suelo**.
 - La IA mueve al NPC a `get_approach_position()`: el `NavigationAgent3D` lo
   ajusta a la superficie caminable, así el NPC nunca intenta entrar al
@@ -288,6 +303,7 @@ Para población generada en runtime (aparece, usa un objeto y desaparece), ver
 ```powershell
 Godot.exe --headless --path . --script res://tests/smart_object_smoke_test.gd
 Godot.exe --headless --path . --script res://tests/animation_manager_smoke_test.gd
+Godot.exe --headless --path . --script res://tests/special_object_smoke_test.gd
 ```
 
 `smart_object_smoke_test.gd` verifica colocación, huella/ocupación, rebake,

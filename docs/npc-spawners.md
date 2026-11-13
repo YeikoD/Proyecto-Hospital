@@ -54,7 +54,9 @@ modo se agrega `NpcRouteFSM` en lugar de `NpcSpawnCycle`:
 - `route_trips` define cuántos tramos hace antes de desaparecer: `A→B` cuenta
   `1`, `B→A` cuenta `2`. Con `0` camina indefinidamente.
 - Mientras camina, un selector puede desviarlo **una vez por tramo** a usar un
-  SmartObject cercano (probabilidad `route_smart_object_chance`).
+  SmartObject cercano (probabilidad `route_smart_object_chance`). Prueba las
+  affordances de `route_affordances` (por defecto silla y escritorio de trabajo)
+  y elige la de mejor puntuación.
 - El `NpcBrain` sigue siendo el que reserva el slot, camina y hace la
   interacción; `NpcRouteFSM` solo lo enciende cuando toca.
 - En modo ruta no se exige `require_objective`: el objetivo es el nodo destino.
@@ -100,6 +102,7 @@ El spawn y el despawn ocurren **siempre en el POI** del spawner:
 | Ruta | `route_smart_object_radius` | `12.0` | Radio de búsqueda durante la ruta. `0` = sin límite. |
 | Ruta | `route_smart_object_timeout` | `15.0` | Tiempo máximo sin empezar la interacción. |
 | Ruta | `route_think_interval` | `1.5` | Cada cuánto se reevalúa el selector. |
+| Ruta | `route_affordances` | `[&"sit", &"work"]` | Affordances que puede elegir al desviarse; se queda con la mejor puntuación. |
 | Vida del NPC | `need` | `&"rest"` | Necesidad con la que aparece (urgente). |
 | Vida del NPC | `brain_search_radius` | `0.0` | Radio que usa el `NpcBrain`. `0` = sin límite; primero camina a la grilla y ahí elige. |
 | Vida del NPC | `search_timeout` | `30.0` | Si no consigue objeto, vuelve y desaparece. |

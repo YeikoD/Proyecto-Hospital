@@ -1,8 +1,8 @@
-[gd_resource type="Resource" script_class="BuildItem" format=3]
+[gd_resource type="Resource" script_class="BuildItem" format=3 uid="uid://cljhtrrmwupcb"]
 
+[ext_resource type="Texture2D" uid="uid://dgcpwoha502ed" path="res://assets/Interfaz/Build Icons/desktop_icon_01.png" id="1_cmwlr"]
 [ext_resource type="Script" uid="uid://dd6mq4ip22kt6" path="res://scripts/systems/build/build_item.gd" id="1_script"]
 [ext_resource type="PackedScene" uid="uid://dtoqwr34uihty" path="res://assets/models/construction/objects/desktop_01.glb" id="2_desktop"]
-[ext_resource type="Texture2D" uid="uid://c4bwlescynher" path="res://icon.svg" id="3_preview"]
 [ext_resource type="Resource" path="res://data/smart_objects/desk.tres" id="4_smart"]
 
 [resource]
@@ -12,9 +12,9 @@ display_name = "Escritorio"
 category = "objetos"
 subcategory = "muebles"
 object_type = "furniture"
-preview = ExtResource("3_preview")
+preview = ExtResource("1_cmwlr")
 scene = ExtResource("2_desktop")
 smart_object = ExtResource("4_smart")
-can_rotate = true
 footprint = Vector2i(2, 1)
-notes = "SmartObject: affordance 'use'."
+can_rotate = true
+notes = "SmartObject: affordance 'use'. Con una silla de escritorio delante forma 'Escritorio de trabajo'."

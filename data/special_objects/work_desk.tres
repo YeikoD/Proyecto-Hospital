@@ -1,0 +1,27 @@
+[gd_resource type="Resource" script_class="SpecialObjectDef" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/systems/smart_objects/special_object_def.gd" id="1_script"]
+[ext_resource type="Resource" path="res://data/smart_objects/work_desk.tres" id="2_smart"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"work_desk"
+display_name = "Escritorio de trabajo"
+base_item_id = &"furniture_desktop"
+part_item_id = &"furniture_chair_desktop_01"
+client_item_ids = Array[StringName]([&"furniture_patient_chairs_01", &"furniture_chair_desktop_01"])
+smart_object = ExtResource("2_smart")
+slot_source = "part"
+slot_index = 0
+part_slot_tag = &"work"
+client_slot_tag = &"seat"
+operator_side = Vector2i(0, 1)
+require_facing = true
+snap_part_rotation = true
+remove_together = false
+max_gap = 0.08
+facing_dot = 0.7
+client_min_count = 1
+client_max_count = 2
+client_gap = 0
+client_lateral_tolerance = 0.5

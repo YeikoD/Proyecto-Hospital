@@ -3,8 +3,8 @@
 [ext_resource type="Script" uid="uid://deujy570n55aj" path="res://scripts/systems/build/build_grid.gd" id="1_grid"]
 [ext_resource type="Script" uid="uid://dkp6lppx1q6ig" path="res://scripts/systems/build/build_camera.gd" id="2_camera"]
 [ext_resource type="Script" uid="uid://8qms5e0coem6" path="res://scripts/systems/build/build_controller.gd" id="3_controller"]
-[ext_resource type="PackedScene" uid="uid://d1c67v51etni5" path="res://scripts/systems/build/prefabs/floor_tile.tscn" id="4_floor"]
-[ext_resource type="PackedScene" path="res://scripts/systems/build/prefabs/wall_segment.tscn" id="5_wall"]
+[ext_resource type="PackedScene" uid="uid://d1c67v51etni5" path="res://prefabs/build/floor_tile.tscn" id="4_floor"]
+[ext_resource type="PackedScene" path="res://prefabs/build/wall_segment.tscn" id="5_wall"]
 [ext_resource type="Script" uid="uid://bwhahmf4vvtgw" path="res://scripts/systems/build/build_navigation.gd" id="6_nav"]
 [ext_resource type="Script" path="res://scripts/systems/build/build_menu.gd" id="7_menu"]
 

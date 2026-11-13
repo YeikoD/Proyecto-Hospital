@@ -6,7 +6,7 @@ extends "res://scenes/demos/nav_demo.gd"
 ## varias sillas y activa el cerebro de los NPC. Cada NPC reserva una silla
 ## libre, camina hasta ella, la usa unos segundos y la libera.
 
-const CHAIR_ITEM := "res://data/build_items/muebles/furniture_chair.tres"
+const CHAIR_ITEM := "res://data/build_items/muebles/furniture_chair_desktop.tres"
 
 
 func _build_example() -> void:

@@ -6,7 +6,7 @@ extends "res://scenes/demos/nav_demo.gd"
 ## vivos en total y aparecen espaciados en el tiempo: cada uno busca una silla,
 ## la usa y vuelve a cualquier spawner para desaparecer.
 
-const CHAIR_ITEM := "res://data/build_items/muebles/furniture_chair.tres"
+const CHAIR_ITEM := "res://data/build_items/muebles/furniture_chair_desktop.tres"
 
 ## Celdas donde se coloca una silla de ejemplo (una por NPC como maximo).
 const CHAIR_CELLS := [

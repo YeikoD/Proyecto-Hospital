@@ -16,17 +16,6 @@ reflected_light_source = 2
 tonemap_mode = 2
 fog_height = -1024.0
 
-[sub_resource type="StandardMaterial3D" id="Material_ground"]
-albedo_color = Color(0.26, 0.36, 0.22, 1)
-roughness = 0.95
-
-[sub_resource type="PlaneMesh" id="Mesh_ground"]
-material = SubResource("Material_ground")
-size = Vector2(80, 80)
-
-[sub_resource type="BoxShape3D" id="Shape_ground"]
-size = Vector3(80, 0.5, 80)
-
 [node name="BuildDemo" type="Node3D" unique_id=1611217203]
 script = ExtResource("1_i02tf")
 
@@ -46,19 +35,6 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.02, -25)
 [node name="BuildGrid" parent="BuildSystem" index="0"]
 cells_x = 25
 cells_z = 50
-sub_dash_length = null
-sub_dash_gap = null
-
-[node name="Ground" type="StaticBody3D" parent="." unique_id=1667772600 groups=["navigation_static"]]
-transform = Transform3D(2.5, 0, 0, 0, 1, 0, 0, 0, 2.5, 0, 0, 0)
-visible = false
-
-[node name="MeshInstance3D" type="MeshInstance3D" parent="Ground" unique_id=1284561626]
-mesh = SubResource("Mesh_ground")
-
-[node name="CollisionShape3D" type="CollisionShape3D" parent="Ground" unique_id=1205856417]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.25, 0)
-shape = SubResource("Shape_ground")
 
 [node name="FPSPlayer" parent="." unique_id=21838221 instance=ExtResource("7_7jb6e")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.05, 9)

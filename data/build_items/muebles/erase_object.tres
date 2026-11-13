@@ -1,7 +1,7 @@
-[gd_resource type="Resource" script_class="BuildItem" format=3]
+[gd_resource type="Resource" script_class="BuildItem" format=3 uid="uid://wym62m6a03ew"]
 
-[ext_resource type="Script" path="res://scripts/systems/build/build_item.gd" id="1_script"]
-[ext_resource type="Texture2D" path="res://icon.svg" id="2_preview"]
+[ext_resource type="Script" uid="uid://dd6mq4ip22kt6" path="res://scripts/systems/build/build_item.gd" id="1_script"]
+[ext_resource type="Texture2D" uid="uid://desly7n1ifel8" path="res://assets/Interfaz/Build Icons/delete_icons.png" id="1_urrc5"]
 
 [resource]
 script = ExtResource("1_script")
@@ -10,6 +10,6 @@ display_name = "Borrador de objetos"
 category = "objetos"
 subcategory = "muebles"
 object_type = "erase_object"
-preview = ExtResource("2_preview")
+preview = ExtResource("1_urrc5")
 preview_tint = Color(1, 0.32, 0.28, 1)
 notes = "Borra solo objetos y muebles."

@@ -31,7 +31,7 @@ func _run() -> void:
 	var map := demo.get_world_3d().navigation_map
 
 	# --- Catálogo ---------------------------------------------------------
-	var item := load("res://data/build_items/muebles/furniture_chair.tres") as BuildItem
+	var item := load("res://data/build_items/muebles/furniture_chair_desktop.tres") as BuildItem
 	_check(item != null, "carga el item silla")
 	_check(item.smart_object != null, "el item declara un SmartObjectDef")
 	_check(item.scene != null, "el item tiene escena 3D")

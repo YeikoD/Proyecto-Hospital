@@ -1,0 +1,20 @@
+[gd_resource type="Resource" script_class="BuildItem" format=3 uid="uid://cskbgm6ju76tk"]
+
+[ext_resource type="Texture2D" uid="uid://bdk6lau65nlwq" path="res://assets/Interfaz/Build Icons/patient_chairs_01.png" id="1_35wva"]
+[ext_resource type="Script" uid="uid://dd6mq4ip22kt6" path="res://scripts/systems/build/build_item.gd" id="1_script"]
+[ext_resource type="PackedScene" uid="uid://bf8su2c6rkn8c" path="res://prefabs/items/patient_chairs_01.tscn" id="2_msw4q"]
+[ext_resource type="Resource" path="res://data/smart_objects/seat.tres" id="4_smart"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"furniture_patient_chairs_01"
+display_name = "Sillas de pacientes"
+category = "objetos"
+subcategory = "muebles"
+object_type = "furniture"
+preview = ExtResource("1_35wva")
+scene = ExtResource("2_msw4q")
+smart_object = ExtResource("4_smart")
+footprint = Vector2i(1, 2)
+can_rotate = true
+notes = "SmartObject: affordance 'sit'. Banca de 3 asientos."

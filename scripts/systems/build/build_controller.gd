@@ -19,11 +19,14 @@ signal pieces_changed
 ## Se emite al colocar / borrar un SmartObject (muebles, props interactivos).
 signal object_placed(object: Node)
 signal object_removed(object: Node)
+## Se emite al formarse o separarse un objeto especial (varias piezas).
+signal special_object_formed(object: Node)
+signal special_object_dissolved(object: Node)
 ## Se emite al pintar, borrar o reasignar una zona (para la futura IA).
 signal zones_changed
 
-const FLOOR_PREFAB := preload("res://scripts/systems/build/prefabs/floor_tile.tscn")
-const WALL_PREFAB := preload("res://scripts/systems/build/prefabs/wall_segment.tscn")
+const FLOOR_PREFAB := preload("res://prefabs/build/floor_tile.tscn")
+const WALL_PREFAB := preload("res://prefabs/build/wall_segment.tscn")
 const GHOST_SHADER := preload("res://scripts/systems/build/shaders/ghost.gdshader")
 ## Variante sin test de profundidad: el rojo del borrador se ve sobre la pieza.
 const GHOST_ERASE_SHADER := preload("res://scripts/systems/build/shaders/ghost_erase.gdshader")
@@ -110,6 +113,8 @@ const OBJECT_ERASE_TIME := 0.12
 @export var wall_scene: PackedScene = WALL_PREFAB
 @export var build_menu: BuildMenu
 @export var items_dir: String = "res://data/build_items"
+## Directorio de recetas de objetos especiales (combinaciones de piezas).
+@export var special_objects_dir: String = "res://data/special_objects"
 
 @export_group("Dimensiones")
 @export var floor_thickness := 0.1
@@ -142,6 +147,13 @@ var _walls: Dictionary = {}
 ## guarda todas las celdas cubiertas (y sirve para colisiones de huella).
 var _objects: Dictionary = {}
 var _object_cells: Dictionary = {}
+
+## Recetas de objetos especiales cargadas de `special_objects_dir`.
+var special_object_defs: Array[SpecialObjectDef] = []
+## Objetos especiales activos (combinaciones de piezas).
+var _special_objects: Array[SpecialObject] = []
+## Pieza -> objeto especial al que pertenece mientras la combinacion esta activa.
+var _special_by_piece: Dictionary = {}
 
 ## Zonas pintadas: celda -> id de zona, e id de zona -> tipo.
 var _zone_cells: Dictionary = {}
@@ -619,6 +631,33 @@ func get_objects() -> Array[BuildPiece]:
 	return out
 
 
+func get_special_object_count() -> int:
+	return _special_objects.size()
+
+
+func get_special_objects() -> Array[SpecialObject]:
+	var out: Array[SpecialObject] = []
+	for special in _special_objects:
+		if is_instance_valid(special):
+			out.append(special)
+	return out
+
+
+## Objeto especial cuya huella cubre `cell` (o null).
+func get_special_object_at(cell: Vector2i) -> SpecialObject:
+	var piece: BuildPiece = _object_cells.get(cell)
+	if piece == null:
+		return null
+	return _special_by_piece.get(piece) as SpecialObject
+
+
+## Objeto especial al que pertenece una pieza (o null).
+func get_special_object_for(piece: BuildPiece) -> SpecialObject:
+	if piece == null:
+		return null
+	return _special_by_piece.get(piece) as SpecialObject
+
+
 ## Punto central de cada celda con suelo. La IA lo usa para entrar a la grilla
 ## desde fuera (por ejemplo, viniendo del terreno).
 func get_floor_points() -> PackedVector3Array:
@@ -650,6 +689,13 @@ func clear_all() -> void:
 	_clear_corner_pieces()
 	_wall_corner_path.clear()
 	_hidden_walls.clear()
+	# Los objetos especiales se liberan antes que sus piezas: no deben intentar
+	# restaurar SmartObjects que tambien se estan borrando.
+	for special in _special_objects:
+		if is_instance_valid(special):
+			special.queue_free()
+	_special_objects.clear()
+	_special_by_piece.clear()
 	for piece: Node in _floors.values():
 		piece.queue_free()
 	for piece: Node in _walls.values():
@@ -785,7 +831,146 @@ func _object_cells_for(
 	return cells
 
 
+## Si la celda ancla de una pieza acoplada cae dentro de la base (por ejemplo,
+## una silla medio metro bajo el escritorio), corre el ancla a una celda libre
+## y compensa el sub-offset. Asi el fantasma no se vuelve rojo solo por el snap
+## de medio metro.
+##
+## Si el cursor apunta al centro de la celda de la base (sub-offset cero) se
+## prueban las cuatro celdas vecinas: la silla se puede meter hasta quedar
+## medio debajo del escritorio, conservando el ancla fuera de la base.
+func _resolve_part_anchor(
+	cell: Vector2i,
+	item: BuildItem,
+	rotation_steps: int,
+	sub_offset: Vector3
+) -> Array:
+	if item == null:
+		return [cell, sub_offset]
+	var owner := _object_cells.get(cell) as BuildPiece
+	if owner == null:
+		return [cell, sub_offset]
+	var def := _special_def_for_piece(item, owner)
+	if def == null or item.id == def.base_item_id:
+		return [cell, sub_offset]
+	for axis in _anchor_move_axes(owner, item, cell, rotation_steps, sub_offset):
+		var moved := cell + axis
+		if not grid.is_cell_inside(moved):
+			continue
+		var moved_offset := sub_offset - Vector3(
+			float(axis.x), 0.0, float(axis.y)
+		) * grid.cell_size
+		if _can_place_object_at(moved, item, rotation_steps, moved_offset):
+			return [moved, moved_offset]
+	return [cell, sub_offset]
+
+
+## Orden en que se prueban las celdas vecinas para sacar el ancla de la base.
+## Primero la direccion del sub-offset (si existe) y despues el lado por el que
+## la pieza esta mas metida en la base.
+func _anchor_move_axes(
+	owner: BuildPiece,
+	item: BuildItem,
+	cell: Vector2i,
+	rotation_steps: int,
+	sub_offset: Vector3
+) -> Array[Vector2i]:
+	var axes: Array[Vector2i] = []
+	if not is_zero_approx(sub_offset.x):
+		axes.append(Vector2i(int(signf(sub_offset.x)), 0))
+	if not is_zero_approx(sub_offset.z):
+		axes.append(Vector2i(0, int(signf(sub_offset.z))))
+
+	var base_rect := _piece_rect(owner)
+	var part_rect := _rect_for_item(item, cell, rotation_steps, sub_offset)
+	if base_rect.size == Vector2.ZERO or part_rect.size == Vector2.ZERO:
+		return axes
+	var center := part_rect.get_center()
+	var edges := [
+		[Vector2i(-1, 0), center.x - base_rect.position.x],
+		[Vector2i(1, 0), base_rect.end.x - center.x],
+		[Vector2i(0, -1), center.y - base_rect.position.y],
+		[Vector2i(0, 1), base_rect.end.y - center.y],
+	]
+	edges.sort_custom(func(a: Array, b: Array) -> bool:
+		return float(a[1]) < float(b[1]))
+	for edge in edges:
+		var axis: Vector2i = edge[0]
+		if not axes.has(axis):
+			axes.append(axis)
+	return axes
+
+
+## Base de un objeto especial ya formado (siempre es la primera pieza).
+func _special_base_piece(special: SpecialObject) -> BuildPiece:
+	if special == null:
+		return null
+	var parts := special.get_parts()
+	if parts.is_empty():
+		return null
+	return parts[0]
+
+
+## Pieza operadora de un objeto especial ya formado (siempre es la segunda).
+func _special_part_piece(special: SpecialObject) -> BuildPiece:
+	if special == null:
+		return null
+	var parts := special.get_parts()
+	if parts.size() < 2:
+		return null
+	return parts[1]
+
+
+## Receta que relaciona `item` con una pieza ya colocada. Si la pieza pertenece
+## a un objeto especial, se compara contra la base del conjunto.
+func _special_def_for_piece(
+	item: BuildItem, other: BuildPiece
+) -> SpecialObjectDef:
+	if item == null or other == null:
+		return null
+	var other_id := other.item_id
+	var special := _special_by_piece.get(other) as SpecialObject
+	if special != null:
+		var base := _special_base_piece(special)
+		if base != null:
+			other_id = base.item_id
+	return _special_def_for_pair(item.id, other_id)
+
+
+## Comprueba que `item` pueda compartir celdas con un objeto especial ya
+## formado. Solo las piezas de la misma receta (operador o clientes) pueden
+## hacerlo; si ademas encaja como client, el conjunto se rehace al colocarla.
+## El lado y la orientacion se validan recien al formar el conjunto: igual que
+## con las piezas sueltas, el fantasma no se pone rojo por eso.
+func _can_extend_special(
+	def: SpecialObjectDef,
+	special: SpecialObject,
+	base: BuildPiece,
+	item: BuildItem,
+	_cell: Vector2i,
+	_rotation_steps: int,
+	_sub_offset: Vector3
+) -> bool:
+	if def == null or special == null or base == null or item == null:
+		return false
+	if item.id == def.base_item_id:
+		return false
+	return item.id == def.part_item_id or def.is_client_item(item.id)
+
+
+## `_special_client_matches` para una pieza que todavia no esta instanciada.
 func _can_place_object(
+	cell: Vector2i,
+	item: BuildItem,
+	rotation_steps: int = 0,
+	sub_offset: Vector3 = Vector3.ZERO
+) -> bool:
+	var resolved := _resolve_part_anchor(cell, item, rotation_steps, sub_offset)
+	return _can_place_object_at(
+		resolved[0], item, rotation_steps, resolved[1])
+
+
+func _can_place_object_at(
 	cell: Vector2i,
 	item: BuildItem,
 	rotation_steps: int = 0,
@@ -795,17 +980,171 @@ func _can_place_object(
 		return false
 	if not grid.is_cell_inside(cell):
 		return false
+	# Dos piezas no pueden compartir la celda ancla: el guardado y el borrado se
+	# indexan por esa celda. Las celdas compartidas de la huella si valen.
+	if _object_cells.has(cell):
+		var anchor_owner := _object_cells[cell] as BuildPiece
+		if anchor_owner != null and anchor_owner.cell == cell:
+			return false
 	var cells := _object_cells_for(item, cell, rotation_steps, sub_offset)
 	if cells.is_empty():
 		return false
+
+	# Una pieza de un objeto especial puede compartir celdas con su pareja:
+	# por ejemplo, la silla de escritorio puede quedar medio metro debajo del
+	# escritorio. Las celdas compartidas siguen perteneciendo a la base.
+	var shared_def: SpecialObjectDef = null
+	var shared_other: BuildPiece = null
 	for c in cells:
 		if not grid.is_cell_inside(c):
 			return false
-		if _object_cells.has(c):
-			return false
 		if require_floor_for_objects and not _floors.has(c):
 			return false
+		if not _object_cells.has(c):
+			continue
+		var other := _object_cells[c] as BuildPiece
+		if other == null:
+			return false
+		# Si la celda pertenece a un objeto especial ya formado, la pieza nueva
+		# solo puede compartirla si amplia ese mismo conjunto (por ejemplo, una
+		# segunda silla de pacientes metida medio metro hacia el escritorio).
+		var other_special := _special_by_piece.get(other) as SpecialObject
+		var def: SpecialObjectDef = null
+		var def_other: BuildPiece = other
+		if other_special != null:
+			def_other = _special_base_piece(other_special)
+			if def_other == null:
+				return false
+			def = _special_def_for_pair(item.id, def_other.item_id)
+			if def == null or not _can_extend_special(
+					def, other_special, def_other, item, cell,
+					rotation_steps, sub_offset):
+				return false
+			# Solo se comparten celdas con la base o con el operador. Dos
+			# clientes no se pisan entre si.
+			if other != def_other \
+					and other != _special_part_piece(other_special):
+				return false
+		else:
+			def = _special_def_for_pair(item.id, other.item_id)
+			if def == null:
+				return false
+		# La pieza acoplada no puede tener su celda ancla debajo de la base.
+		if item.id != def.base_item_id and c == cell:
+			return false
+		if shared_other == null:
+			shared_other = def_other
+			shared_def = def
+		elif shared_other != def_other or shared_def != def:
+			return false
+
+	# Una pieza que solo comparte celdas con el conjunto necesita al menos una
+	# celda propia para poder borrarse y guardarse. Vale su celda ancla aunque
+	# la huella quede entera sobre la base. La base si puede reclamar celdas.
+	if shared_def != null and item.id != shared_def.base_item_id:
+		var owns_cell := not _object_cells.has(cell)
+		if not owns_cell:
+			for c in cells:
+				if not _object_cells.has(c):
+					owns_cell = true
+					break
+		if not owns_cell:
+			return false
+
+	if shared_def != null and not _special_placement_matches(
+			shared_def, shared_other, item, cell, rotation_steps, sub_offset, false):
+		return false
 	return true
+
+
+## Receta que relaciona dos items, sin importar cual es la base y cual la pieza.
+func _special_def_for_pair(
+	item_id: StringName, other_id: StringName
+) -> SpecialObjectDef:
+	for def in special_object_defs:
+		if def == null or not def.is_valid():
+			continue
+		if (item_id == def.base_item_id and other_id == def.part_item_id) \
+				or (item_id == def.part_item_id and other_id == def.base_item_id):
+			return def
+	return null
+
+
+## Comprueba si la colocacion hipotetica de `item` forma una pareja valida con
+## `other` (que ya esta colocado). Se usa antes de permitir celdas compartidas.
+func _special_placement_matches(
+	def: SpecialObjectDef,
+	other: BuildPiece,
+	item: BuildItem,
+	cell: Vector2i,
+	rotation_steps: int,
+	sub_offset: Vector3,
+	check_facing: bool = true
+) -> bool:
+	var placing_base := item.id == def.base_item_id
+	var base_rect: Rect2
+	var part_rect: Rect2
+	var part_rotation: int
+	var base_cells: Array[Vector2i]
+	var part_cells: Array[Vector2i]
+	if placing_base:
+		base_rect = _rect_for_item(item, cell, rotation_steps, sub_offset)
+		part_rect = _piece_rect(other)
+		part_rotation = other.object_rotation_steps
+		base_cells = _object_cells_for(item, cell, rotation_steps, sub_offset)
+		part_cells = _piece_cells(other)
+	else:
+		base_rect = _piece_rect(other)
+		part_rect = _rect_for_item(item, cell, rotation_steps, sub_offset)
+		part_rotation = rotation_steps
+		base_cells = _piece_cells(other)
+		part_cells = _object_cells_for(item, cell, rotation_steps, sub_offset)
+
+	if base_rect.size == Vector2.ZERO or part_rect.size == Vector2.ZERO:
+		return false
+	if not base_rect.grow(maxf(def.max_gap, 0.0)).intersects(part_rect):
+		return false
+	if not _cells_adjacent_or_shared(base_cells, part_cells):
+		return false
+	if check_facing and def.require_facing:
+		var yaw := float(part_rotation) * PI * 0.5
+		var forward := Basis(Vector3.UP, yaw) * Vector3.FORWARD
+		var base_center := base_rect.get_center()
+		var part_center := part_rect.get_center()
+		var to_base := Vector3(
+			base_center.x - part_center.x, 0.0, base_center.y - part_center.y
+		)
+		if to_base.length() < 0.001:
+			return false
+		if forward.normalized().dot(to_base.normalized()) < def.facing_dot:
+			return false
+	return true
+
+
+## Rectangulo XZ de una colocacion hipotetica (todavia no instanciada).
+func _rect_for_item(
+	item: BuildItem,
+	cell: Vector2i,
+	rotation_steps: int,
+	sub_offset: Vector3
+) -> Rect2:
+	if item == null or grid == null:
+		return Rect2()
+	var footprint := _object_footprint(item, rotation_steps)
+	var half := Vector2(footprint.x, footprint.y) * grid.cell_size * 0.5
+	var center := grid.cell_center(cell) \
+		+ _object_footprint_offset(footprint) + sub_offset
+	return Rect2(Vector2(center.x, center.z) - half, half * 2.0)
+
+
+func _cells_adjacent_or_shared(
+	a: Array[Vector2i], b: Array[Vector2i]
+) -> bool:
+	for ca in a:
+		for cb in b:
+			if absi(ca.x - cb.x) + absi(ca.y - cb.y) <= 1:
+				return true
+	return false
 
 
 ## Instancia un objeto (mueble/prop). La raíz de la escena puede ser un
@@ -818,7 +1157,10 @@ func _place_object(
 	sub_offset: Vector3 = Vector3.ZERO
 ) -> bool:
 	var steps := wrapi(rotation_steps, 0, 4)
-	if not _can_place_object(cell, item, steps, sub_offset):
+	var resolved := _resolve_part_anchor(cell, item, steps, sub_offset)
+	cell = resolved[0]
+	sub_offset = resolved[1]
+	if not _can_place_object_at(cell, item, steps, sub_offset):
 		return false
 
 	var piece := _spawn_piece(item.scene, true, item.smart_object, true)
@@ -843,13 +1185,642 @@ func _place_object(
 		+ Vector3.UP * object_height_offset
 	piece.global_rotation = Vector3(0.0, yaw, 0.0)
 
-	for c in _object_cells_for(item, cell, steps, sub_offset):
-		_object_cells[c] = piece
+	_claim_object_cells(piece, item, cell, steps, sub_offset)
 	_objects[cell] = piece
+
+	# Una pieza recien colocada puede cerrar una receta de objeto especial.
+	_try_form_special_object(piece)
 
 	object_placed.emit(piece)
 	pieces_changed.emit()
 	return true
+
+
+## Registra las celdas que ocupa una pieza. En una pareja de objeto especial,
+## las celdas compartidas se quedan con la base: la silla no le roba la huella
+## al escritorio. Al colocar la base, esta reclama las celdas compartidas.
+##
+## Si la huella quedo entera sobre la base, la pieza igual conserva su celda
+## ancla para poder borrarse y guardarse.
+func _claim_object_cells(
+	piece: BuildPiece,
+	item: BuildItem,
+	cell: Vector2i,
+	rotation_steps: int,
+	sub_offset: Vector3
+) -> void:
+	for c in _object_cells_for(item, cell, rotation_steps, sub_offset):
+		if not _object_cells.has(c):
+			_object_cells[c] = piece
+			continue
+		var other := _object_cells[c] as BuildPiece
+		var def := _special_def_for_pair(item.id, other.item_id) \
+			if other != null else null
+		if def != null and item.id == def.base_item_id:
+			_object_cells[c] = piece
+	# El ancla siempre debe pertenecer a la pieza, aunque su huella quede sobre
+	# la base y las celdas de la huella se compartan.
+	if not _object_cells.has(cell):
+		_object_cells[cell] = piece
+
+
+# --------------------------------------------------------------------------
+# Objetos especiales (combinaciones de piezas)
+# --------------------------------------------------------------------------
+
+## Busca una receta que la pieza recien colocada pueda completar y forma el
+## objeto especial. Devuelve el nodo combinado o null.
+func _try_form_special_object(placed: BuildPiece) -> SpecialObject:
+	if placed == null or special_object_defs.is_empty():
+		return null
+	if _special_by_piece.has(placed):
+		return null
+	for def in special_object_defs:
+		if def == null or not def.is_valid():
+			continue
+
+		# Si ya existe un conjunto y se coloca otra pieza client valida, se
+		# rehace el conjunto con todas las piezas client.
+		if def.requires_client() and def.is_client_item(placed.item_id):
+			var upgraded := _try_upgrade_special_clients(def, placed)
+			if upgraded != null:
+				return upgraded
+
+		# La misma pieza puede ser operador o client (por ejemplo, una silla de
+		# escritorio suelta). Si ya hay un operador valido, se interpreta como
+		# client antes de intentar crear otro operador.
+		if def.is_client_item(placed.item_id):
+			var as_client := _try_form_from_client(def, placed)
+			if as_client != null:
+				return as_client
+
+		var formed := _try_form_from_base(def, placed)
+		if formed != null:
+			return formed
+		formed = _try_form_from_part(def, placed)
+		if formed != null:
+			return formed
+	return null
+
+
+## Intenta formar la receta cuando la pieza colocada es la base.
+func _try_form_from_base(
+	def: SpecialObjectDef, placed: BuildPiece
+) -> SpecialObject:
+	if placed.item_id != def.base_item_id:
+		return null
+	var part := _find_special_part(placed, def)
+	if part == null:
+		return null
+	return _finish_special_candidate(def, placed, part)
+
+
+## Intenta formar la receta cuando la pieza colocada es la que se acopla.
+func _try_form_from_part(
+	def: SpecialObjectDef, placed: BuildPiece
+) -> SpecialObject:
+	if placed.item_id != def.part_item_id:
+		return null
+	var base := _find_special_base(placed, def)
+	if base == null:
+		return null
+	return _finish_special_candidate(def, base, placed)
+
+
+## Intenta formar la receta cuando la pieza colocada es una pieza client.
+func _try_form_from_client(
+	def: SpecialObjectDef, placed: BuildPiece
+) -> SpecialObject:
+	if not def.is_client_item(placed.item_id):
+		return null
+	for candidate in _unique_object_pieces():
+		if candidate.item_id != def.base_item_id \
+				or _special_by_piece.has(candidate):
+			continue
+		var candidate_part := _find_special_part(candidate, def, placed)
+		if candidate_part == null:
+			continue
+		var clients := _find_special_clients(def, candidate, candidate_part)
+		if not clients.has(placed):
+			continue
+		if not _prepare_special_pair(def, candidate, candidate_part):
+			continue
+		return _form_special_object(def, candidate, candidate_part, clients)
+	return null
+
+
+func _finish_special_candidate(
+	def: SpecialObjectDef, base: BuildPiece, part: BuildPiece
+) -> SpecialObject:
+	var clients: Array[BuildPiece] = []
+	if def.requires_client():
+		clients = _find_special_clients(def, base, part)
+		if clients.size() < def.client_min_count:
+			return null
+	if not _prepare_special_pair(def, base, part):
+		return null
+	return _form_special_object(def, base, part, clients)
+
+
+## Piezas client (por ejemplo, sillas de pacientes) del lado opuesto a la
+## pieza acoplada, con una separacion de `client_gap` celdas.
+func _find_special_clients(
+	def: SpecialObjectDef, base: BuildPiece, part: BuildPiece
+) -> Array[BuildPiece]:
+	var out: Array[BuildPiece] = []
+	if def == null or not def.requires_client() or base == null or part == null:
+		return out
+
+	var direction := _part_anchor_direction(base, part)
+	if direction == Vector2.ZERO:
+		return out
+
+	var base_cells := _piece_cells(base)
+	var base_rect := _piece_rect(base)
+	var base_center := Vector3(
+		base.global_position.x, 0.0, base.global_position.z
+	)
+	for candidate in _unique_object_pieces():
+		if candidate == base or candidate == part:
+			continue
+		if not def.is_client_item(candidate.item_id):
+			continue
+		if _special_by_piece.has(candidate):
+			continue
+		if not _special_client_matches(
+				def, base, direction, base_cells, base_rect, base_center, candidate):
+			continue
+		out.append(candidate)
+
+	out.sort_custom(func(a: BuildPiece, b: BuildPiece) -> bool:
+		return base.global_position.distance_squared_to(a.global_position) \
+			< base.global_position.distance_squared_to(b.global_position)
+	)
+	if def.client_max_count > 0 and out.size() > def.client_max_count:
+		out.resize(def.client_max_count)
+	return out
+
+
+## Si ya hay un Escritorio de trabajo formado y se coloca otra pieza client
+## valida (por ejemplo, una segunda silla de pacientes), rehace el conjunto con
+## todas las piezas client para que sus asientos queden integrados.
+func _try_upgrade_special_clients(
+	def: SpecialObjectDef, placed: BuildPiece
+) -> SpecialObject:
+	for special in _special_objects:
+		if special == null or not is_instance_valid(special):
+			continue
+		if special.get_special_id() != def.id:
+			continue
+		var parts := special.get_parts()
+		if parts.size() < 2:
+			continue
+		var base := parts[0]
+		var part := parts[1]
+		var direction := _part_anchor_direction(base, part)
+		if direction == Vector2.ZERO:
+			continue
+		if not _special_client_matches(
+				def, base, direction, _piece_cells(base), _piece_rect(base),
+				Vector3(base.global_position.x, 0.0, base.global_position.z), placed):
+			continue
+
+		var clients: Array[BuildPiece] = []
+		for i in range(2, parts.size()):
+			clients.append(parts[i])
+		if def.client_max_count > 0 and clients.size() >= def.client_max_count:
+			continue
+		clients.append(placed)
+		if not _prepare_special_pair(def, base, part):
+			continue
+
+		_dissolve_special_object(special, false)
+		return _form_special_object(def, base, part, clients)
+	return null
+
+
+func _special_client_matches(
+	def: SpecialObjectDef,
+	base: BuildPiece,
+	direction: Vector2,
+	base_cells: Array[Vector2i],
+	base_rect: Rect2,
+	base_center: Vector3,
+	candidate: BuildPiece
+) -> bool:
+	# Debe estar del lado opuesto a la pieza acoplada.
+	var to_client := Vector2(
+		candidate.global_position.x - base_center.x,
+		candidate.global_position.z - base_center.z
+	)
+	if to_client.dot(direction) >= 0.0:
+		return false
+
+	# Distancia exacta entre la base y el cliente: `client_gap` celdas vacias.
+	var min_distance := _min_cell_distance(base_cells, _piece_cells(candidate))
+	if min_distance != def.client_gap + 1:
+		return false
+
+	# Tiene que entrar en el ancho lateral de la base (a los lados).
+	return _lateral_overlaps(
+		base_rect, _piece_rect(candidate), direction,
+		def.client_lateral_tolerance * grid.cell_size
+	)
+
+
+## Direccion de la pieza acoplada respecto de la base, ajustada al eje mas
+## cercano. Devuelve un vector unitario en X o Z.
+func _snap_axis(value: Vector3) -> Vector2:
+	if absf(value.x) >= absf(value.z):
+		var sx := signf(value.x)
+		return Vector2(sx, 0.0) if sx != 0.0 else Vector2.ZERO
+	var sz := signf(value.z)
+	return Vector2(0.0, sz) if sz != 0.0 else Vector2.ZERO
+
+
+## Direccion desde las celdas de la base hacia una celda ancla, usando la celda
+## de base mas cercana. No depende de la rotacion.
+func _anchor_direction_from_cells(
+	base_cells: Array[Vector2i], anchor: Vector2i
+) -> Vector2:
+	if base_cells.is_empty():
+		return Vector2.ZERO
+	var best := 9999
+	var direction := Vector2.ZERO
+	for base_cell in base_cells:
+		var distance := absi(anchor.x - base_cell.x) + absi(anchor.y - base_cell.y)
+		if distance == 0 or distance >= best:
+			continue
+		best = distance
+		direction = _snap_axis(Vector3(
+			anchor.x - base_cell.x, 0.0, anchor.y - base_cell.y
+		))
+	return direction
+
+
+## Direccion desde la base hacia la pieza acoplada, usando su celda ancla.
+func _part_anchor_direction(base: BuildPiece, part: BuildPiece) -> Vector2:
+	if base == null or part == null:
+		return Vector2.ZERO
+	return _anchor_direction_from_cells(_piece_cells(base), part.cell)
+
+
+## Lado del operador en el mundo, rotado con la base.
+func _operator_side_for_rotation(
+	def: SpecialObjectDef, rotation_steps: int
+) -> Vector2:
+	if def == null or def.operator_side == Vector2i.ZERO:
+		return Vector2.ZERO
+	var side := Vector3(def.operator_side.x, 0.0, def.operator_side.y)
+	var yaw := float(rotation_steps) * PI * 0.5
+	return _snap_axis(Basis(Vector3.UP, yaw) * side)
+
+
+func _operator_side_world(def: SpecialObjectDef, base: BuildPiece) -> Vector2:
+	if base == null:
+		return Vector2.ZERO
+	return _operator_side_for_rotation(def, base.object_rotation_steps)
+
+
+## Lado del operador para una base concreta. Si hay una pieza client que no
+## puede ser operador (por ejemplo, la banca de pacientes) acoplada a la base,
+## el operador va del lado opuesto a esa banca. Asi la receta funciona con el
+## escritorio girado y no depende de un lado fijo. Si no hay banca se usa el
+## lado configurado en la receta (`operator_side`).
+func _resolved_operator_side(def: SpecialObjectDef, base: BuildPiece) -> Vector2:
+	if def == null or base == null:
+		return Vector2.ZERO
+	var base_cells := _piece_cells(base)
+	if base_cells.is_empty():
+		return Vector2.ZERO
+	var bench_side := Vector2.ZERO
+	var bench_found := false
+	var ambiguous := false
+	for candidate in _unique_object_pieces():
+		if candidate == base or _special_by_piece.has(candidate):
+			continue
+		if not def.is_client_item(candidate.item_id):
+			continue
+		# Las sillas de escritorio podrian ser operador: no definen el lado.
+		if candidate.item_id == def.part_item_id:
+			continue
+		var distance := _min_cell_distance(base_cells, _piece_cells(candidate))
+		if distance != def.client_gap + 1:
+			continue
+		var direction := _anchor_direction_from_cells(base_cells, candidate.cell)
+		if direction == Vector2.ZERO:
+			continue
+		if not bench_found:
+			bench_side = direction
+			bench_found = true
+		elif not ambiguous and direction != bench_side:
+			ambiguous = true
+	if bench_found and not ambiguous:
+		return -bench_side
+	return _operator_side_world(def, base)
+
+
+## La pieza acoplada debe estar del lado del operador resuelto para esa base.
+func _part_on_operator_side(
+	def: SpecialObjectDef, base: BuildPiece, part: BuildPiece
+) -> bool:
+	var side := _resolved_operator_side(def, base)
+	if side == Vector2.ZERO:
+		return true
+	return _part_anchor_direction(base, part) == side
+
+
+func _min_cell_distance(a: Array[Vector2i], b: Array[Vector2i]) -> int:
+	var best := 9999
+	for ca in a:
+		for cb in b:
+			var distance := absi(ca.x - cb.x) + absi(ca.y - cb.y)
+			if distance < best:
+				best = distance
+	return best
+
+
+func _lateral_overlaps(
+	base_rect: Rect2, client_rect: Rect2, direction: Vector2, tolerance: float
+) -> bool:
+	if absf(direction.x) > 0.0:
+		# Operador a los lados en X: el ancho lateral es Z.
+		var base_min := base_rect.position.y
+		var base_max := base_rect.end.y
+		var client_min := client_rect.position.y
+		var client_max := client_rect.end.y
+		return client_min <= base_max + tolerance \
+			and client_max >= base_min - tolerance
+	var base_min := base_rect.position.x
+	var base_max := base_rect.end.x
+	var client_min := client_rect.position.x
+	var client_max := client_rect.end.x
+	return client_min <= base_max + tolerance \
+		and client_max >= base_min - tolerance
+
+
+func _find_special_part(
+	base: BuildPiece, def: SpecialObjectDef, exclude: BuildPiece = null
+) -> BuildPiece:
+	var best: BuildPiece = null
+	var best_distance := INF
+	for candidate in _unique_object_pieces():
+		if candidate == base or candidate == exclude:
+			continue
+		if candidate.item_id != def.part_item_id:
+			continue
+		if _special_by_piece.has(candidate):
+			continue
+		if not _special_pair_geometry_matches(def, base, candidate):
+			continue
+		if not _part_on_operator_side(def, base, candidate):
+			continue
+		var distance := base.global_position.distance_squared_to(candidate.global_position)
+		if distance < best_distance:
+			best = candidate
+			best_distance = distance
+	return best
+
+
+func _find_special_base(part: BuildPiece, def: SpecialObjectDef) -> BuildPiece:
+	var best: BuildPiece = null
+	var best_distance := INF
+	for candidate in _unique_object_pieces():
+		if candidate == part or candidate.item_id != def.base_item_id:
+			continue
+		if _special_by_piece.has(candidate):
+			continue
+		if not _special_pair_geometry_matches(def, candidate, part):
+			continue
+		if not _part_on_operator_side(def, candidate, part):
+			continue
+		var distance := part.global_position.distance_squared_to(candidate.global_position)
+		if distance < best_distance:
+			best = candidate
+			best_distance = distance
+	return best
+
+
+## Reglas de acoplamiento: las huellas deben ser adyacentes en la grilla,
+## tocarse en el mundo (sin huecos) y, opcionalmente, la pieza debe mirar hacia
+## la base.
+func _special_pair_matches(
+	def: SpecialObjectDef, base: BuildPiece, part: BuildPiece
+) -> bool:
+	if not _special_pair_geometry_matches(def, base, part):
+		return false
+	if def.require_facing and not _part_faces_base(part, base, def.facing_dot):
+		return false
+	return true
+
+
+## Prepara la pareja antes de formar: si la receta lo permite, gira la pieza
+## acoplada para que mire a la base y recien despues valida la orientacion.
+func _prepare_special_pair(
+	def: SpecialObjectDef, base: BuildPiece, part: BuildPiece
+) -> bool:
+	if def == null or base == null or part == null:
+		return false
+	if not def.require_facing:
+		return _special_pair_geometry_matches(def, base, part)
+	if def.snap_part_rotation:
+		_snap_part_to_base(def, base, part)
+	return _special_pair_matches(def, base, part)
+
+
+## Solo geometria: adyacencia y contacto. La orientacion se valida despues,
+## porque puede resolverse con `snap_part_rotation`.
+func _special_pair_geometry_matches(
+	def: SpecialObjectDef, base: BuildPiece, part: BuildPiece
+) -> bool:
+	return _pieces_adjacent(base, part) \
+		and _pieces_touch(base, part, def.max_gap)
+
+
+func _unique_object_pieces() -> Array[BuildPiece]:
+	var out: Array[BuildPiece] = []
+	var seen := {}
+	for piece in _objects.values():
+		if piece == null or not is_instance_valid(piece) or seen.has(piece):
+			continue
+		seen[piece] = true
+		if piece is BuildPiece:
+			out.append(piece as BuildPiece)
+	return out
+
+
+func _piece_cells(piece: BuildPiece) -> Array[Vector2i]:
+	var out: Array[Vector2i] = []
+	if piece == null:
+		return out
+	for key in _object_cells.keys():
+		if _object_cells[key] == piece:
+			var cell: Vector2i = key
+			out.append(cell)
+	return out
+
+
+func _pieces_adjacent(base: BuildPiece, part: BuildPiece) -> bool:
+	var base_cells := _piece_cells(base)
+	if base_cells.is_empty():
+		return false
+	var lookup := {}
+	for cell in base_cells:
+		lookup[cell] = true
+	for cell in _piece_cells(part):
+		if lookup.has(cell + Vector2i(1, 0)) \
+				or lookup.has(cell + Vector2i(-1, 0)) \
+				or lookup.has(cell + Vector2i(0, 1)) \
+				or lookup.has(cell + Vector2i(0, -1)):
+			return true
+	return false
+
+
+func _pieces_touch(base: BuildPiece, part: BuildPiece, max_gap: float) -> bool:
+	var a := _piece_rect(base)
+	var b := _piece_rect(part)
+	if a.size == Vector2.ZERO or b.size == Vector2.ZERO:
+		return false
+	return a.grow(maxf(max_gap, 0.0)).intersects(b)
+
+
+## Rectangulo XZ de la huella real de una pieza, ya rotada y desplazada.
+func _piece_rect(piece: BuildPiece) -> Rect2:
+	if piece == null or grid == null:
+		return Rect2()
+	var item := _find_item_by_id(piece.item_id)
+	if item == null:
+		return Rect2()
+	var footprint := _object_footprint(item, piece.object_rotation_steps)
+	var half := Vector2(footprint.x, footprint.y) * grid.cell_size * 0.5
+	var center := Vector2(piece.global_position.x, piece.global_position.z)
+	return Rect2(center - half, half * 2.0)
+
+
+func _part_faces_base(
+	part: BuildPiece, base: BuildPiece, facing_dot: float
+) -> bool:
+	var yaw := float(part.object_rotation_steps) * PI * 0.5
+	var forward := Basis(Vector3.UP, yaw) * Vector3.FORWARD
+	var to_base := Vector3(
+		base.global_position.x - part.global_position.x,
+		0.0,
+		base.global_position.z - part.global_position.z
+	)
+	if to_base.length() < 0.001:
+		return false
+	return forward.normalized().dot(to_base.normalized()) >= facing_dot
+
+
+## Gira una pieza acoplada de 1x1 al paso de 90 grados que mejor mira a la base.
+## No toca piezas multi-celda para no cambiar su huella/ocupacion.
+func _snap_part_to_base(
+	def: SpecialObjectDef, base: BuildPiece, part: BuildPiece
+) -> void:
+	if def == null or base == null or part == null:
+		return
+	var item := _find_item_by_id(part.item_id)
+	if item == null:
+		return
+	var footprint := _object_footprint(item, part.object_rotation_steps)
+	if footprint.x * footprint.y != 1:
+		return
+	var to_base := Vector3(
+		base.global_position.x - part.global_position.x,
+		0.0,
+		base.global_position.z - part.global_position.z
+	)
+	if to_base.length() < 0.001:
+		return
+	var best_step := part.object_rotation_steps
+	var best_dot := -2.0
+	for step in 4:
+		var forward := Basis(Vector3.UP, float(step) * PI * 0.5) * Vector3.FORWARD
+		var dot := forward.dot(to_base.normalized())
+		if dot > best_dot:
+			best_dot = dot
+			best_step = step
+	part.object_rotation_steps = best_step
+	part.global_rotation = Vector3(0.0, float(best_step) * PI * 0.5, 0.0)
+
+
+func _form_special_object(
+	def: SpecialObjectDef,
+	base: BuildPiece,
+	part: BuildPiece,
+	clients: Array[BuildPiece] = []
+) -> SpecialObject:
+	if def == null or base == null or part == null:
+		return null
+	if _special_by_piece.has(base) or _special_by_piece.has(part):
+		return null
+	for client in clients:
+		if _special_by_piece.has(client):
+			return null
+
+	var composite := SpecialObject.new()
+	composite.name = "Special_%s" % String(def.id)
+	if not composite.configure(def, base, part, clients):
+		composite.free()
+		return null
+
+	var parent: Node = pieces_root if pieces_root != null else self
+	parent.add_child(composite)
+	composite.global_transform = Transform3D(
+		Basis(), composite.get_marker_origin()
+	)
+
+	# La IA deja de ver las piezas por separado mientras el conjunto este activo.
+	_suspend_special_part(base)
+	_suspend_special_part(part)
+	for client in clients:
+		_suspend_special_part(client)
+
+	_special_objects.append(composite)
+	_special_by_piece[base] = composite
+	_special_by_piece[part] = composite
+	for client in clients:
+		_special_by_piece[client] = composite
+	special_object_formed.emit(composite)
+	return composite
+
+
+func _suspend_special_part(piece: BuildPiece) -> void:
+	if piece == null or not is_instance_valid(piece):
+		return
+	if piece is SmartObject:
+		var smart := piece as SmartObject
+		smart.release_all()
+		SmartObjectRegistry.unregister(smart)
+		smart.remove_from_group("smart_objects")
+
+
+func _restore_special_part(piece: BuildPiece) -> void:
+	if piece == null or not is_instance_valid(piece) \
+			or piece.is_queued_for_deletion():
+		return
+	if piece is SmartObject:
+		var smart := piece as SmartObject
+		if not smart.is_in_group("smart_objects"):
+			smart.add_to_group("smart_objects")
+		SmartObjectRegistry.register(smart)
+
+
+## Deshace la combinacion. `restore_parts` vuelve a registrar las piezas como
+## SmartObjects individuales (se usa al separar, no al borrar todo el conjunto).
+func _dissolve_special_object(
+	composite: SpecialObject, restore_parts: bool
+) -> void:
+	if composite == null:
+		return
+	_special_objects.erase(composite)
+	for piece in composite.get_parts():
+		_special_by_piece.erase(piece)
+		if restore_parts:
+			_restore_special_part(piece)
+	if is_instance_valid(composite):
+		special_object_dissolved.emit(composite)
+		composite.queue_free()
 
 
 func _place_floor(cell: Vector2i, silent: bool = false) -> bool:
@@ -1881,7 +2852,32 @@ func _erase_floor_at(
 func _erase_object_at(cell: Vector2i, order: int = 0) -> void:
 	if not _object_cells.has(cell):
 		return
-	var piece = _object_cells[cell]
+	var piece := _object_cells[cell] as BuildPiece
+	if piece == null:
+		return
+
+	# Si la pieza forma parte de un objeto especial, primero se separa el
+	# conjunto. La politica de borrado la decide la receta.
+	var composite := _special_by_piece.get(piece) as SpecialObject
+	if composite != null:
+		var def := composite.special_def
+		if def != null and def.remove_together:
+			var parts := composite.get_parts()
+			_dissolve_special_object(composite, false)
+			var index := 0
+			for part in parts:
+				_erase_object_piece(part, order + index)
+				index += 1
+			return
+		_dissolve_special_object(composite, true)
+
+	_erase_object_piece(piece, order)
+
+
+## Borra una pieza concreta (todas sus celdas) y lanza su animacion.
+func _erase_object_piece(piece: BuildPiece, order: int = 0) -> void:
+	if piece == null:
+		return
 
 	# Quitar todas las celdas cubiertas y la entrada primaria.
 	for c in _object_cells.keys():
@@ -1920,6 +2916,8 @@ func _disable_piece_collision(piece: Node) -> void:
 
 func _load_build_items() -> void:
 	build_items = BuildItemLoader.load_items(items_dir)
+	special_object_defs = SpecialObjectLoader.load_defs(special_objects_dir)
+	_validate_special_object_defs()
 	if build_menu != null:
 		build_menu.reload_items(items_dir)
 	# Seleccionar un item por defecto para no romper el flujo clásico.
@@ -1938,6 +2936,48 @@ func _wire_build_menu() -> void:
 		return
 	if not build_menu.item_selected.is_connected(_on_build_item_selected):
 		build_menu.item_selected.connect(_on_build_item_selected)
+
+
+## Avisa en consola si una receta quedo desincronizada de los items, por
+## ejemplo al cambiar el `id` de un BuildItem sin actualizar la receta.
+func _validate_special_object_defs() -> void:
+	for def in special_object_defs:
+		if def == null:
+			continue
+		if def.smart_object == null:
+			push_warning(
+				"SpecialObject '%s': falta la definicion smart_object del resultado."
+				% String(def.id)
+			)
+		var base_item := _find_item_by_id(def.base_item_id)
+		if base_item == null:
+			push_warning(
+				"SpecialObject '%s': no existe el BuildItem base '%s'. Revisa el id del item o actualiza la receta."
+				% [String(def.id), String(def.base_item_id)]
+			)
+		var part_item := _find_item_by_id(def.part_item_id)
+		if part_item == null:
+			push_warning(
+				"SpecialObject '%s': no existe el BuildItem que se acopla '%s'. Revisa el id del item o actualiza la receta."
+				% [String(def.id), String(def.part_item_id)]
+			)
+		for client_id in def.client_item_ids:
+			if _find_item_by_id(client_id) == null:
+				push_warning(
+					"SpecialObject '%s': no existe el BuildItem client '%s'. Revisa el id del item o actualiza la receta."
+					% [String(def.id), String(client_id)]
+				)
+
+		var slot_item: BuildItem = null
+		if def.slot_source == "part":
+			slot_item = part_item
+		else:
+			slot_item = base_item
+		if slot_item != null and slot_item.smart_object == null:
+			push_warning(
+				"SpecialObject '%s': el item '%s' no tiene smart_object; no se puede copiar el slot/POI."
+				% [String(def.id), String(slot_item.id)]
+			)
 
 
 func _on_build_item_selected(item: BuildItem) -> void:
@@ -2655,17 +3695,48 @@ func _update_hover() -> bool:
 	_hover_wall = grid.wall_from_world(hit)
 
 	# Precision de medio metro para objetos: se ajusta el centro de la huella a
-	# la sub-grilla, limitado a un paso por eje.
+	# la sub-grilla, limitado a un paso por eje. Si ese ajuste superpone el
+	# objeto con otra pieza, se usa el desplazamiento valido mas cercano.
 	_hover_sub_offset = Vector3.ZERO
 	if tool == Tool.OBJECT and _selected_object_item != null \
 			and grid.subdivisions > 1:
-		var point: Vector3 = hit
-		var footprint := _object_footprint(_selected_object_item, _object_rotation)
-		var base := grid.cell_center(_hover_cell) \
-			+ _object_footprint_offset(footprint)
-		_hover_sub_offset = grid.snap_offset(
-			Vector2(point.x - base.x, point.z - base.z), 1)
+		_hover_sub_offset = _valid_hover_offset(hit)
 	return true
+
+
+## Devuelve el desplazamiento fino valido mas cercano al cursor. Evita que el
+## borde de una celda se vuelva rojo solo porque el snap de 0,5 m mete la
+## huella en la celda vecina ocupada (por ejemplo, debajo de un escritorio).
+func _valid_hover_offset(point: Vector3) -> Vector3:
+	var footprint := _object_footprint(_selected_object_item, _object_rotation)
+	var base := grid.cell_center(_hover_cell) \
+		+ _object_footprint_offset(footprint)
+	var wanted := grid.snap_offset(
+		Vector2(point.x - base.x, point.z - base.z), 1)
+	if _can_place_object(
+			_hover_cell, _selected_object_item, _object_rotation, wanted):
+		return wanted
+
+	var step := grid.sub_cell_size()
+	var candidates: Array[Vector3] = []
+	for dx in [-1, 0, 1]:
+		for dz in [-1, 0, 1]:
+			candidates.append(Vector3(float(dx) * step, 0.0, float(dz) * step))
+	candidates.sort_custom(func(a: Vector3, b: Vector3) -> bool:
+		var da := a.distance_squared_to(wanted)
+		var db := b.distance_squared_to(wanted)
+		if absf(da - db) > 0.0001:
+			return da < db
+		# En empate, preferir el centro de la celda.
+		return a.length_squared() < b.length_squared()
+	)
+	for candidate in candidates:
+		if candidate.is_equal_approx(wanted):
+			continue
+		if _can_place_object(
+				_hover_cell, _selected_object_item, _object_rotation, candidate):
+			return candidate
+	return wanted
 
 
 func _update_ghosts() -> void:

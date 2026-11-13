@@ -1,0 +1,46 @@
+[gd_scene format=3 uid="uid://bf8su2c6rkn8c"]
+
+[ext_resource type="Script" uid="uid://grxlbk2cktgx" path="res://scripts/systems/smart_objects/smart_object.gd" id="1_smart"]
+[ext_resource type="PackedScene" uid="uid://dllglj8idgk6q" path="res://assets/models/construction/objects/patient_chairs_01.glb" id="2_model"]
+[ext_resource type="Resource" path="res://data/smart_objects/seat.tres" id="3_seat"]
+
+[sub_resource type="BoxShape3D" id="Shape_body"]
+size = Vector3(0.505956, 0.86362, 1.530083)
+
+[node name="PatientChairs" type="StaticBody3D" unique_id=70802084]
+script = ExtResource("1_smart")
+definition = ExtResource("3_seat")
+
+[node name="Model" parent="." unique_id=1915531093 instance=ExtResource("2_model")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.029341, 0, -0.003296)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="." unique_id=425393599]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.42329, 0)
+shape = SubResource("Shape_body")
+
+[node name="Slot_0" type="Marker3D" parent="." unique_id=146543094]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.111780256, 0.452272, -0.52388954)
+
+[node name="POI_0" type="Marker3D" parent="." unique_id=1927903500]
+transform = Transform3D(0, 0, -1, 0, 1, 0, 1, 0, 0, 0.20953399, 0, -0.52811056)
+
+[node name="Approach_0" type="Marker3D" parent="." unique_id=1887647459]
+transform = Transform3D(0, 0, -1, 0, 1, 0, 1, 0, 0, 0.5798549, 0, -0.52811056)
+
+[node name="Slot_1" type="Marker3D" parent="." unique_id=1173389056]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.111780256, 0.452272, 0.002085)
+
+[node name="POI_1" type="Marker3D" parent="." unique_id=1788732774]
+transform = Transform3D(0, 0, -1, 0, 1, 0, 1, 0, 0, 0.20953399, 0, 0.002085)
+
+[node name="Approach_1" type="Marker3D" parent="." unique_id=1069175453]
+transform = Transform3D(0, 0, -1, 0, 1, 0, 1, 0, 0, 0.5798549, 0, 0.002085)
+
+[node name="Slot_2" type="Marker3D" parent="." unique_id=1440029564]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.111780256, 0.452272, 0.54175115)
+
+[node name="POI_2" type="Marker3D" parent="." unique_id=146537264]
+transform = Transform3D(0, 0, -1, 0, 1, 0, 1, 0, 0, 0.20953399, 0, 0.5245167)
+
+[node name="Approach_2" type="Marker3D" parent="." unique_id=2071952684]
+transform = Transform3D(0, 0, -1, 0, 1, 0, 1, 0, 0, 0.5798549, 0, 0.5245167)

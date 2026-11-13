@@ -39,6 +39,9 @@ signal route_finished
 @export var smart_object_timeout := 15.0
 ## Cada cuanto se reevalua el selector mientras camina.
 @export var think_interval := 1.5
+## Affordances que puede elegir al desviarse. Se queda con la mejor puntuacion.
+@export var affordances: Array[StringName] = [&"sit", &"work"]
+## Affordance de respaldo si `affordances` esta vacio.
 @export var affordance: StringName = &"sit"
 @export var debug := false
 
@@ -51,6 +54,7 @@ var _think_timer := 0.0
 var _wait_timer := 0.0
 var _smart_timer := 0.0
 var _smart_object_attempted := false
+var _chosen_affordance: StringName = &""
 var _trips := 0
 
 
@@ -155,13 +159,29 @@ func _tick_travel(delta: float) -> void:
 func _try_start_smart_object() -> bool:
 	if _brain == null or _smart_object_attempted or smart_object_chance <= 0.0:
 		return false
-	if affordance == StringName():
+	var ids: Array[StringName] = []
+	for id in affordances:
+		ids.append(id)
+	if ids.is_empty() and affordance != StringName():
+		ids.append(affordance)
+	if ids.is_empty():
 		return false
 
-	var candidates := SmartObjectRegistry.find_candidates(
-		affordance, _agent.global_position, smart_object_radius
-	)
-	if candidates.is_empty():
+	var best: Dictionary = {}
+	var best_id: StringName = &""
+	for id in ids:
+		if id == StringName():
+			continue
+		var candidates := SmartObjectRegistry.find_candidates(
+			id, _agent.global_position, smart_object_radius
+		)
+		if candidates.is_empty():
+			continue
+		var candidate: Dictionary = candidates[0]
+		if best.is_empty() or float(candidate["score"]) > float(best["score"]):
+			best = candidate
+			best_id = id
+	if best.is_empty():
 		return false
 
 	# Solo se hace una tirada por NPC: al llegar a la primera zona con objetos,
@@ -170,6 +190,7 @@ func _try_start_smart_object() -> bool:
 	if randf() >= clampf(smart_object_chance, 0.0, 1.0):
 		return false
 
+	_chosen_affordance = best_id
 	_start_smart_object()
 	return true
 
@@ -180,14 +201,20 @@ func _start_smart_object() -> void:
 	_agent.stop()
 	_agent.set_frozen(false)
 
-	_brain.needs = {"rest": 1.0}
-	_brain.need_growth = {"rest": 0.0}
-	_brain.need_affordances = {"rest": affordance}
+	var chosen := _chosen_affordance
+	if chosen == StringName():
+		chosen = affordance
+	var need_key := "work" if chosen == &"work" else "rest"
+	_brain.needs = {need_key: 1.0}
+	_brain.need_growth = {need_key: 0.0}
+	_brain.need_affordances = {need_key: chosen}
 	_brain.need_threshold = 0.5
 	_brain.search_radius = smart_object_radius
 	_brain.set_enabled(true)
 	if debug:
-		print("[NpcRouteFSM] %s decide usar un SmartObject" % _agent.name)
+		print("[NpcRouteFSM] %s decide usar un SmartObject (%s)" % [
+			_agent.name, chosen
+		])
 
 
 func _tick_smart_object(delta: float) -> void:
@@ -226,6 +253,7 @@ func _finish_smart_object(used: bool) -> void:
 	if _brain != null:
 		_brain.set_enabled(false)
 	_state = State.TRAVEL
+	_chosen_affordance = &""
 	_think_timer = maxf(think_interval, 0.1)
 	if debug:
 		print("[NpcRouteFSM] %s %s SmartObject" % [

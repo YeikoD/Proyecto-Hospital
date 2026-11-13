@@ -81,8 +81,8 @@ build_system.tscn
 | `scripts/systems/build/build_piece.gd` | Clase base de una pieza colocada; redimensiona malla y colisión. |
 | `scripts/systems/build/build_input.gd` | Registro en runtime de las acciones de entrada. |
 | `scripts/systems/build/shaders/grid.gdshader` | Dibujo anti-aliased de la grilla sobre un plano. |
-| `scripts/systems/build/prefabs/floor_tile.tscn` | Prefab de suelo (caja 1×0.1×1). |
-| `scripts/systems/build/prefabs/wall_segment.tscn` | Prefab de pared (caja 1×2.8×0.2). |
+| `prefabs/build/floor_tile.tscn` | Prefab de suelo (caja 1×0.1×1). |
+| `prefabs/build/wall_segment.tscn` | Prefab de pared (caja 1×2.8×0.2). |
 | `scripts/systems/build/build_system.tscn` | Escena ensamblada lista para arrastrar a un nivel. |
 | `scripts/characters/npc/npc_agent.gd` | `CharacterBody3D` con `NavigationAgent3D`, deambular y animación. |
 | `scripts/characters/npc/npc.tscn` | Prefab de NPC con el modelo y las animaciones del jugador. |
@@ -681,6 +681,14 @@ El desplazamiento se **limita a un paso por eje** respecto del centro de la
 huella. Al mover el cursor a la celda vecina, el ancla cambia y el desplazamiento
 vuelve a empezar, de modo que el recorrido completo ofrece posiciones continuas
 cada 0,5 m sin que el objeto “salte” dos celdas.
+
+Si el desplazamiento fino hace que la huella se superponga con otra pieza (por
+ejemplo, al acercar una silla al escritorio), el controlador prueba los
+desplazamientos válidos más cercanos dentro de la misma celda. En una pareja de
+objeto especial la superposición parcial está permitida: la silla puede quedar
+medio metro debajo del escritorio y las celdas compartidas siguen perteneciendo
+a la base. Para el resto de objetos, si no hay una posición válida, el fantasma
+se muestra en rojo.
 
 El offset resultante se guarda en `BuildPiece.sub_offset` y se aplica igual en:
 

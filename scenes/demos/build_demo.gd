@@ -27,8 +27,12 @@ func _setup_npcs() -> void:
 		if brain == null:
 			continue
 		node.wander = false
-		brain.needs = {"rest": randf_range(0.7, 1.0)}
-		brain.need_growth = {"rest": 0.01}
+		brain.needs = {
+			"rest": randf_range(0.7, 1.0),
+			"work": randf_range(0.7, 1.0),
+		}
+		brain.need_growth = {"rest": 0.01, "work": 0.005}
+		brain.need_affordances = {"rest": &"sit", "work": &"work"}
 		brain.need_threshold = 0.6
 		brain.search_radius = 30.0
 		brain.set_enabled(true)

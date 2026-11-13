@@ -73,6 +73,9 @@ static var _spawners: Array = []
 @export var route_smart_object_radius := 12.0
 @export var route_smart_object_timeout := 15.0
 @export var route_think_interval := 1.5
+## Affordances que puede elegir al desviarse durante la ruta. Se queda con la
+## de mejor puntuacion: silla para descansar o escritorio de trabajo.
+@export var route_affordances: Array[StringName] = [&"sit", &"work"]
 
 @export_group("Vida del NPC")
 ## Necesidad que el NPC llega con ganas de satisfacer.
@@ -304,6 +307,7 @@ func _configure_npc(npc: NpcAgent) -> void:
 		route.set("smart_object_radius", route_smart_object_radius)
 		route.set("smart_object_timeout", route_smart_object_timeout)
 		route.set("think_interval", route_think_interval)
+		route.set("affordances", route_affordances)
 		route.set("affordance", objective_affordance)
 		npc.add_child(route)
 	else:

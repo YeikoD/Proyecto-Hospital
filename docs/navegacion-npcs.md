@@ -373,13 +373,15 @@ Configuración en el inspector del spawner, grupo **Ruta**:
 | `route_smart_object_radius` | Radio de búsqueda (`0` = sin límite). |
 | `route_smart_object_timeout` | Tiempo máximo sin empezar la interacción. |
 | `route_think_interval` | Cada cuánto se reevalúa el selector mientras camina. |
+| `route_affordances` | Affordances que puede elegir al desviarse. Por defecto silla y escritorio de trabajo. |
 
 El `NpcRouteFSM` es un FSM con un **selector de comportamiento**:
 
 ```
 mientras viaja:
   1. ¿hay un SmartObject libre cerca y toca la tirada aleatoria?
-       └─ sí → USE_SMART_OBJECT (delegado a NpcBrain)
+       └─ sí → elige la mejor affordance de route_affordances
+              → USE_SMART_OBJECT (delegado a NpcBrain)
   2. ¿llegó al destino?
        └─ sí → WAIT
               ├─ quedan tramos y loop activo → volver al otro extremo

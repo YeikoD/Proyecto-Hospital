@@ -27,11 +27,11 @@ signal interaction_aborted(object: Node)
 
 @export_group("Necesidades")
 ## necesidad -> valor actual (0..1). Cuanto más alto, más urgente.
-@export var needs: Dictionary = {"rest": 0.0}
+@export var needs: Dictionary = {"rest": 0.0, "work": 0.0}
 ## necesidad -> cuánto crece por segundo.
-@export var need_growth: Dictionary = {"rest": 0.01}
+@export var need_growth: Dictionary = {"rest": 0.01, "work": 0.005}
 ## necesidad -> affordance que la satisface.
-@export var need_affordances: Dictionary = {"rest": &"sit"}
+@export var need_affordances: Dictionary = {"rest": &"sit", "work": &"work"}
 ## Por debajo de este valor la necesidad no dispara una búsqueda.
 @export var need_threshold := 0.6
 ## Tiempo máximo para llegar al objeto antes de abortar y liberar el slot.
@@ -157,27 +157,26 @@ func _tick_idle(delta: float) -> void:
 		return
 	_think_timer = maxf(think_interval, 0.05)
 
-	var need := _most_urgent_need()
-	if need == "":
-		return
+	for need in _needs_by_urgency():
+		var affordance_id: StringName = need_affordances.get(need, StringName())
+		if affordance_id == StringName():
+			continue
 
-	var affordance_id: StringName = need_affordances.get(need, StringName())
-	if affordance_id == StringName():
-		return
+		# Si viene de fuera de la grilla, primero camina a la celda construida
+		# mas cercana. Recien al llegar elige el mueble: la distancia no importa.
+		if _is_outside_grid() and _has_free_candidate(affordance_id):
+			if _walk_to_grid_gateway():
+				_begin_seek()
+				return
 
-	# Si viene de fuera de la grilla, primero camina a la celda construida mas
-	# cercana. Recien al llegar elige el mueble: la distancia no importa.
-	if _is_outside_grid() and _has_free_candidate(affordance_id):
-		if _walk_to_grid_gateway():
-			_begin_seek()
-			return
-
-	var candidate := SmartObjectRegistry.claim_best(
-		affordance_id, _agent.global_position, search_radius, _agent_id
-	)
-	if candidate.is_empty():
+		var candidate := SmartObjectRegistry.claim_best(
+			affordance_id, _agent.global_position, search_radius, _agent_id
+		)
+		if candidate.is_empty():
+			# Esa necesidad no tiene un objeto libre: probar la siguiente.
+			continue
+		_begin(candidate)
 		return
-	_begin(candidate)
 
 
 ## El NPC esta parado fuera de las celdas construidas.
@@ -217,15 +216,15 @@ func _tick_seek(delta: float) -> void:
 		_think_timer = 0.5
 
 
-func _most_urgent_need() -> String:
-	var best := ""
-	var best_value := need_threshold
+func _needs_by_urgency() -> Array[String]:
+	var urgent: Array[String] = []
 	for need in needs.keys():
-		var value := float(needs[need])
-		if value >= best_value:
-			best_value = value
-			best = String(need)
-	return best
+		if float(needs[need]) >= need_threshold:
+			urgent.append(String(need))
+	urgent.sort_custom(func(a: String, b: String) -> bool:
+		return float(needs[a]) > float(needs[b])
+	)
+	return urgent
 
 
 func _begin(candidate: Dictionary) -> void:

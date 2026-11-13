@@ -270,6 +270,46 @@ Un item puede usar:
 Los items de tipo `furniture` / `prop` se colocan con la herramienta de objetos
 (clic = un objeto, `R` = rotar 90°).
 
+### Objetos especiales
+
+Varios muebles pueden combinarse en un único SmartObject si una receta los
+relaciona. El primer caso es el **Escritorio de trabajo**:
+
+- un **Escritorio**;
+- una **Silla de escritorio** delante (el operador);
+- al menos una **Silla de pacientes** o silla de escritorio suelta del otro
+  lado, directamente detrás. Se pueden integrar hasta dos piezas client.
+
+El conjunto ofrece `work` al operador y `sit` a los pacientes.
+
+- Las piezas siguen existiendo y conservan sus colliders, pero la IA deja de
+  verlas por separado: solo ve el objeto combinado.
+- La silla del operador puede compartir celdas con el escritorio: puede quedar
+  medio metro debajo. La base conserva la propiedad de las celdas compartidas.
+- Con el conjunto ya formado se pueden agregar más sillas del lado de los
+  pacientes; también pueden quedar medio metro metidas y compartir celdas con
+  el escritorio, sin correr una celda entera hacia atrás.
+- Apuntando al centro de la celda del escritorio, la silla del operador se mete
+  un paso más (0,5 m) hasta quedar medio debajo de la mesa. El ancla se guarda
+  en una celda libre vecina y el sub-offset compensa la diferencia.
+- La silla del operador se puede colocar sin preocuparse por la rotación: al
+  formarse el conjunto se auto-orienta hacia el escritorio.
+- El operador se busca del lado opuesto a la banca de pacientes, así funciona
+  con el escritorio en cualquier rotación. Sillas sueltas como clientes usan
+  `operator_side` como pista. Así una silla suelta detrás no se confunde con el
+  operador.
+- Los slots del operador y de los pacientes tienen tags distintos (`work` y
+  `seat`), así cada affordance usa el asiento correcto.
+- Sin la pieza de pacientes el conjunto **no** se forma: quedan el escritorio y
+  la silla como SmartObjects individuales.
+- La combinación funciona en cualquier orden de colocación y se vuelve a
+  detectar al cargar el nivel.
+- Al borrar una de las piezas, el conjunto se separa y el resto vuelve a
+  comportarse como muebles normales (configurable con `remove_together`).
+- Las recetas viven en `data/special_objects/` y se cargan automáticamente.
+
+Ver [docs/objetos-especiales.md](objetos-especiales.md).
+
 ### Esquinas de pared
 
 Las esquinas no son items: son piezas visuales que el controlador genera sola
@@ -366,10 +406,15 @@ scripts/systems/build/
 ├── shaders/ghost_erase.gdshader    Variante roja de borrado (sin depth test)
 ├── shaders/ghost_common.gdshaderinc  Cuerpo compartido de los fantasmas
 ├── shaders/floor_preview.gdshader  Vista previa plana del pincel de pisos
-├── shaders/menu_tint.gdshader      Tinte rojo de los borradores en el menu
-└── prefabs/
-    ├── floor_tile.tscn
-    └── wall_segment.tscn
+└── shaders/menu_tint.gdshader      Tinte rojo de los borradores en el menu
+
+prefabs/
+├── build/                   Prefabs base de construcción
+│   ├── floor_tile.tscn
+│   └── wall_segment.tscn
+└── items/                   Prefabs de objetos colocables (SmartObjects)
+    ├── chair.tscn
+    └── patient_chairs_01.tscn
 scripts/characters/npc/
 ├── npc.tscn                 Prefab con modelo/animaciones del jugador
 └── npc_agent.gd             Movimiento + deambular por NavMesh
@@ -429,11 +474,17 @@ Godot.exe --headless --path . --script res://tests/build_smoke_test.gd
 Godot.exe --headless --path . --script res://tests/nav_smoke_test.gd
 Godot.exe --headless --path . --script res://tests/smart_object_smoke_test.gd
 Godot.exe --headless --path . --script res://tests/animation_manager_smoke_test.gd
+Godot.exe --headless --path . --script res://tests/special_object_smoke_test.gd
+Godot.exe --headless --path . --script res://tests/special_object_overlap_smoke_test.gd
+Godot.exe --headless --path . --script res://tests/patient_desk_smoke_test.gd
+Godot.exe --headless --path . --script res://tests/work_desk_ai_smoke_test.gd
+Godot.exe --headless --path . --script res://tests/route_work_smoke_test.gd
 ```
 
 Salen con código 0 e imprimen `BUILD_SMOKE_TEST_OK`, `NAV_SMOKE_TEST_OK`,
-`SMART_OBJECT_SMOKE_TEST_OK` y `ANIMATION_MANAGER_SMOKE_TEST_OK`
-respectivamente. La prueba de navegación verifica horneado, caminos entre
+`SMART_OBJECT_SMOKE_TEST_OK`, `ANIMATION_MANAGER_SMOKE_TEST_OK`,
+`SPECIAL_OBJECT_SMOKE_TEST_OK`, `SPECIAL_OVERLAP_OK`, `PATIENT_DESK_OK`,
+`WORK_DESK_AI_OK` y `ROUTE_WORK_OK` respectivamente. La prueba de navegación verifica horneado, caminos entre
 habitaciones, puerta de 1 celda, rebake al colocar una pared y destino de NPC.
 La de SmartObjects cubre la interacción completa con la silla animada.
 
