@@ -37,8 +37,8 @@ func _run() -> void:
 	var desk_cell := Vector2i(5, 5)
 	var tuck := Vector3(0.0, 0.0, -0.5)
 	_check(controller.place_object_item(desk, desk_cell, 0), "coloca el escritorio")
-	_check(controller.place_object_item(chair, Vector2i(5, 4), 2),
-		"coloca el operador")
+	_check(controller.place_object_item(chair, Vector2i(5, 4), 2, Vector3(0, 0, 0.5)),
+		"coloca el operador bien pegado al escritorio")
 	_check(controller.place_object_item(chair, Vector2i(5, 6), 0, tuck),
 		"coloca la primera silla de pacientes metida medio metro")
 	await process_frame

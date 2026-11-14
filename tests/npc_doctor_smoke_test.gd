@@ -68,6 +68,14 @@ func _run() -> void:
 		"el objeto especial anuncia 'work'")
 	_check(special != null and special.find_free_slot(&"work") >= 0,
 		"el escritorio de trabajo tiene un slot 'work' libre")
+	if special != null and special.get_parts().size() >= 2:
+		var base := special.get_parts()[0]
+		var work_pos := special.get_use_position(0)
+		var seat_pos := special.get_use_position(1) \
+			if special.get_slot_count() > 1 else work_pos
+		_check(work_pos.distance_to(base.global_position) \
+				<= seat_pos.distance_to(base.global_position) + 0.01,
+			"el operador es la silla mas cercana al escritorio")
 	if special == null:
 		quit(1)
 		return
@@ -146,6 +154,16 @@ func _run() -> void:
 		"el medico cuenta como NPC vivo")
 	_check(NpcSpawner.count_alive() == 1,
 		"hay exactamente un NPC vivo")
+	_check(doctor.find_child("Outfit_torso", true, false) != null,
+		"el medico lleva la tunica de servicio")
+	_check(doctor.find_child("Outfit_legs", true, false) != null,
+		"el medico lleva el pantalon de servicio")
+	var base_torso := doctor.find_child("torso", true, false) as MeshInstance3D
+	var base_legs := doctor.find_child("piernas", true, false) as MeshInstance3D
+	_check(base_torso != null and not base_torso.visible,
+		"el torso base del medico queda oculto")
+	_check(base_legs != null and not base_legs.visible,
+		"las piernas base del medico quedan ocultas")
 
 	var brain := doctor.get_node("NpcBrain") as NpcBrain
 	_check(brain != null, "el medico trae NpcBrain")

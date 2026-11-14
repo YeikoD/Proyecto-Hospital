@@ -6,6 +6,7 @@
 [ext_resource type="AnimationLibrary" uid="uid://c70ure8qbj8ju" path="res://assets/animations/player_library.tres" id="4_lib"]
 [ext_resource type="Script" path="res://scripts/characters/npc/npc_brain.gd" id="5_brain"]
 [ext_resource type="Script" path="res://scripts/characters/npc/npc_animation_manager.gd" id="6_anim_manager"]
+[ext_resource type="Script" path="res://scripts/characters/outfits/character_outfit.gd" id="7_outfit"]
 
 
 [sub_resource type="CapsuleShape3D" id="Capsule_body"]
@@ -47,3 +48,7 @@ enabled = false
 
 [node name="NpcAnimationManager" type="Node" parent="."]
 script = ExtResource("6_anim_manager")
+
+[node name="Outfit" type="Node" parent="."]
+script = ExtResource("7_outfit")
+visual_path = NodePath("../Visual")

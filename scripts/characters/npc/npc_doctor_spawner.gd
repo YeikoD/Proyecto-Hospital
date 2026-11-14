@@ -47,6 +47,10 @@ const DOCTOR_GROUP := &"doctor_npcs"
 ## Cada cuanto se actualiza el indicador.
 @export var status_update_interval := 0.5
 
+@export_group("Atuendo")
+## Atuendo modular que se aplica al medico al invocarlo.
+@export var outfit: Resource = preload("res://data/outfits/atuendo_servicio.tres")
+
 var _last_outcome := SummonOutcome.NONE
 var _last_feedback := ""
 var _feedback_layer: CanvasLayer
@@ -138,6 +142,7 @@ func summon_doctor() -> NpcAgent:
 	npc.add_to_group(DOCTOR_GROUP)
 	_force_work_only(npc)
 	_add_doctor_tag(npc)
+	_apply_outfit(npc)
 	_last_outcome = SummonOutcome.SUMMONED
 	_last_feedback = "Médico invocado: va al Escritorio de trabajo"
 	doctor_summoned.emit(npc)
@@ -318,6 +323,17 @@ func _force_work_only(npc: NpcAgent) -> void:
 	brain.need_threshold = 0.0
 	brain.search_radius = 0.0
 	brain.set_enabled(true)
+
+
+## Aplica el atuendo modular al medico. La parte de cuerpo reemplazada se
+## oculta y la ropa se pesa al mismo esqueleto para que siga las animaciones.
+func _apply_outfit(npc: NpcAgent) -> void:
+	if outfit == null:
+		return
+	var component := npc.get_node_or_null("Outfit")
+	if component == null or not component.has_method("apply_outfit"):
+		return
+	component.call("apply_outfit", outfit)
 
 
 ## El medico es unico y manual: no lo frena el tope de poblacion de los

@@ -1513,6 +1513,14 @@ func _try_form_special_object(placed: BuildPiece) -> SpecialObject:
 		if def == null or not def.is_valid():
 			continue
 
+		# Si la pieza nueva es la silla del operador y quedo mas cerca del
+		# escritorio que la actual, se intercambian los papeles: la mas cercana
+		# pasa a ser el operador y la anterior queda como asiento.
+		if def.part_item_id == placed.item_id:
+			var swapped := _try_swap_special_part(def, placed)
+			if swapped != null:
+				return swapped
+
 		# Si ya existe un conjunto y se coloca otra pieza client valida, se
 		# rehace el conjunto con todas las piezas client.
 		if def.has_clients() and def.is_client_item(placed.item_id):
@@ -1631,6 +1639,80 @@ func _find_special_clients(
 	if def.client_max_count > 0 and out.size() > def.client_max_count:
 		out.resize(def.client_max_count)
 	return out
+
+
+## Si la silla colocada es la del operador y quedo mas cerca del escritorio que
+## la actual, rehace el conjunto para que la mas cercana sea el operador. La
+## silla anterior pasa a ser un asiento de paciente.
+func _try_swap_special_part(
+	def: SpecialObjectDef, placed: BuildPiece
+) -> SpecialObject:
+	if def == null or placed == null or def.part_item_id != placed.item_id:
+		return null
+	for special in _special_objects:
+		if special == null or not is_instance_valid(special):
+			continue
+		if special.get_special_id() != def.id:
+			continue
+		var parts := special.get_parts()
+		if parts.size() < 2:
+			continue
+		var base := parts[0]
+		var current_part := parts[1]
+		if base == placed or current_part == placed:
+			continue
+		# Si hay una banca de pacientes, ella define el lado del operador.
+		if _bench_side_for(def, base) != Vector2.ZERO:
+			continue
+		# No se reacomoda un conjunto que el medico esta usando ahora mismo.
+		if special.has_affordance(&"work") and special.find_free_slot(&"work") < 0:
+			continue
+		if not _special_pair_geometry_matches(def, base, placed):
+			if not _try_dock_existing_part(def, base, placed) \
+					or not _special_pair_geometry_matches(def, base, placed):
+				continue
+		if not _part_on_operator_side(def, base, placed):
+			continue
+		var new_dir := _anchor_direction_from_cells(_piece_cells(base), placed.cell)
+		var part_dir := _part_anchor_direction(base, current_part)
+		if new_dir == Vector2.ZERO or new_dir == part_dir:
+			continue
+		# Si ya hay un asiento de paciente en ese lado, la silla nueva es otro
+		# asiento, no el operador.
+		var same_client_side := false
+		for i in range(2, parts.size()):
+			if _part_anchor_direction(base, parts[i]) == new_dir:
+				same_client_side = true
+				break
+		if same_client_side:
+			continue
+		var new_distance := base.global_position.distance_to(placed.global_position)
+		var old_distance := base.global_position.distance_to(
+			current_part.global_position)
+		# Solo se reacomoda si la silla nueva esta claramente mas cerca. Asi una
+		# silla de paciente apenas metida bajo la mesa no le roba el operador.
+		if new_distance >= old_distance - 0.35:
+			continue
+
+		var clients: Array[BuildPiece] = []
+		for i in range(2, parts.size()):
+			clients.append(parts[i])
+		clients.append(current_part)
+		clients.sort_custom(func(a: BuildPiece, b: BuildPiece) -> bool:
+			return base.global_position.distance_squared_to(a.global_position) \
+				< base.global_position.distance_squared_to(b.global_position)
+		)
+		if def.client_max_count > 0 and clients.size() > def.client_max_count:
+			clients.resize(def.client_max_count)
+		if not _prepare_special_pair(def, base, placed):
+			continue
+
+		_dissolve_special_object(special, false)
+		var formed := _form_special_object(def, base, placed, clients)
+		if formed != null and OS.is_debug_build():
+			print("[BuildController] Operador reacoplado a la silla mas cercana.")
+		return formed
+	return null
 
 
 ## Si ya hay un Escritorio de trabajo formado y se coloca otra pieza client

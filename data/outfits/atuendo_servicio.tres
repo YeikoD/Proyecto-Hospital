@@ -1,0 +1,24 @@
+[gd_resource type="Resource" script_class="OutfitDef" load_steps=7 format=3]
+
+[ext_resource type="Script" path="res://scripts/characters/outfits/outfit_def.gd" id="1_def"]
+[ext_resource type="Script" path="res://scripts/characters/outfits/outfit_piece.gd" id="2_piece"]
+[ext_resource type="PackedScene" path="res://assets/characters/atuendos/atuendo_servicio/tunica_servicio_01.glb" id="3_tunic"]
+[ext_resource type="PackedScene" path="res://assets/characters/atuendos/atuendo_servicio/pantalon_servicio_01.glb" id="4_pants"]
+
+[sub_resource type="Resource" id="Piece_torso"]
+script = ExtResource("2_piece")
+slot = &"torso"
+base_part = &"torso"
+scene = ExtResource("3_tunic")
+
+[sub_resource type="Resource" id="Piece_legs"]
+script = ExtResource("2_piece")
+slot = &"legs"
+base_part = &"piernas"
+scene = ExtResource("4_pants")
+
+[resource]
+script = ExtResource("1_def")
+id = &"atuendo_servicio"
+display_name = "Atuendo de servicio"
+pieces = Array[Resource]([SubResource("Piece_torso"), SubResource("Piece_legs")])

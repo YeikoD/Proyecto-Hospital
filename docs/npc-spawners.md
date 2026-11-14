@@ -122,12 +122,17 @@ el médico puede reservar **cualquiera** de sus sillas, incluidas las de
 pacientes. Ningún NPC normal lo usa. El médico lleva una etiqueta flotante
 `MÉDICO` para distinguirlo del resto del personal (todos comparten modelo).
 
+El médico usa el atuendo modular `data/outfits/atuendo_servicio.tres` (túnica y
+pantalón). El spawner lo aplica al invocarlo; ver [atuendos](atuendos.md).
+
 | Propiedad | Default | Qué hace |
 |---|---|---|
 | `summon_action` | `&"summon_doctor"` | Acción que invoca al médico; se crea si no existe. |
 | `summon_key` | `KEY_Y` | Tecla física que se registra cuando la acción no existe. |
 | `show_feedback` | `true` | Muestra el aviso de invocación en pantalla. |
 | `feedback_duration` | `2.5` | Segundos que queda visible el aviso. |
+| `show_status` | `true` | Indicador de disponibilidad del médico. |
+| `outfit` | `atuendo_servicio.tres` | Atuendo modular que se aplica al médico. |
 
 ```gdscript
 var doctor_spawner = get_node("Spawners/DoctorSpawner")
