@@ -95,6 +95,9 @@ Godot.exe --headless --path . --script res://tests/animation_manager_smoke_test.
 - [Navegación de NPCs](docs/navegacion-npcs.md)
 - [Spawners de NPCs](docs/npc-spawners.md)
 - [Smart Objects](docs/smart-objects.md)
+- [Objetos especiales](docs/objetos-especiales.md)
+- [Atuendo modular](docs/atuendos.md)
+- [Estado técnico del proyecto](docs/estado-tecnico.md)
 
 ## Dependencias
 
